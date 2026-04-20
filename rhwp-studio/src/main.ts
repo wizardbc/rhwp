@@ -342,16 +342,28 @@ function setupGlobalShortcuts(): void {
 function setupFileInput(): void {
   const fileInput = document.getElementById('file-input') as HTMLInputElement;
 
-  fileInput.addEventListener('change', async (e) => {
-    const file = (e.target as HTMLInputElement).files?.[0];
+  const handleSelectedFile = async () => {
+    const file = fileInput.files?.[0];
     if (!file) return;
     const name = file.name.toLowerCase();
     if (!name.endsWith('.hwp') && !name.endsWith('.hwpx')) {
       alert('HWP/HWPX 파일만 지원합니다.');
+      fileInput.value = '';
       return;
     }
     await loadFile(file);
+    fileInput.value = '';
+  };
+
+  fileInput.addEventListener('change', () => {
+    void handleSelectedFile();
   });
+  fileInput.addEventListener('input', () => {
+    void handleSelectedFile();
+  });
+  fileInput.onchange = () => {
+    void handleSelectedFile();
+  };
 
   // 문서 전체에서 브라우저 기본 드롭 동작 방지 (파일 열기/다운로드 방지)
   document.addEventListener('dragover', (e) => e.preventDefault());
@@ -762,6 +774,7 @@ function getSelectionContext(): any {
   const cursor = inputHandler?.getCursorPosition?.() ?? inputHandler?.getPosition?.() ?? null;
   const pageIndex = selection ? getCursorPageIndex(selection.start) : getCursorPageIndex(cursor);
   const selectedTableRef = inputHandler?.getSelectedTableRef?.() ?? null;
+  const selectedPictureRef = inputHandler?.getSelectedPictureRef?.() ?? null;
   const selectedCellRange = inputHandler?.getSelectedCellRange?.() ?? null;
   let selectedHtml = '';
   let selectedText = '';
@@ -827,11 +840,146 @@ function getSelectionContext(): any {
       paraIdx: selectedTableRef.ppi,
       controlIdx: selectedTableRef.ci,
     } : null,
+    pictureObjectSelection: selectedPictureRef ? {
+      secIdx: selectedPictureRef.sec,
+      paraIdx: selectedPictureRef.ppi,
+      controlIdx: selectedPictureRef.ci,
+      objectType: selectedPictureRef.type,
+    } : null,
     cellSelection: selectedCellRange ?? null,
     selectedHtml,
     selectedText,
     documentInfo: wasm.getDocumentInfo(),
   };
+}
+
+function getEditorModeSnapshot(): any {
+  const context = getContext();
+  const selection = getSelectionContext();
+  const cursor = (inputHandler?.getCursorPosition?.() ?? inputHandler?.getPosition?.() ?? null) as Record<string, unknown> | null;
+  const selectedTableRef = inputHandler?.getSelectedTableRef?.() ?? null;
+  const selectedPictureRef = inputHandler?.getSelectedPictureRef?.() ?? null;
+  const selectedCellRange = inputHandler?.getSelectedCellRange?.() ?? null;
+
+  let currentTable: any = null;
+  let currentCell: any = null;
+  let currentPicture: any = null;
+
+  if (cursor?.parentParaIndex !== undefined && cursor?.controlIndex !== undefined) {
+    try {
+      currentTable = {
+        ref: {
+          secIdx: Number(cursor.sectionIndex),
+          paraIdx: Number(cursor.parentParaIndex),
+          controlIdx: Number(cursor.controlIndex),
+        },
+        properties: wasm.getTableProperties(Number(cursor.sectionIndex), Number(cursor.parentParaIndex), Number(cursor.controlIndex)),
+        dimensions: wasm.getTableDimensions(Number(cursor.sectionIndex), Number(cursor.parentParaIndex), Number(cursor.controlIndex)),
+      };
+      if (cursor?.cellIndex !== undefined) {
+        currentCell = {
+          cellIdx: Number(cursor.cellIndex),
+          info: wasm.getCellInfo(Number(cursor.sectionIndex), Number(cursor.parentParaIndex), Number(cursor.controlIndex), Number(cursor.cellIndex)),
+          properties: wasm.getCellProperties(Number(cursor.sectionIndex), Number(cursor.parentParaIndex), Number(cursor.controlIndex), Number(cursor.cellIndex)),
+        };
+      }
+    } catch (error) {
+      console.warn('[rhwp-postmessage] 현재 표 컨텍스트 조회 실패:', error);
+    }
+  }
+
+  if (selectedPictureRef) {
+    try {
+      currentPicture = {
+        ref: {
+          secIdx: selectedPictureRef.sec,
+          paraIdx: selectedPictureRef.ppi,
+          controlIdx: selectedPictureRef.ci,
+          objectType: selectedPictureRef.type,
+        },
+        properties: selectedPictureRef.type === 'image'
+          ? wasm.getPictureProperties(selectedPictureRef.sec, selectedPictureRef.ppi, selectedPictureRef.ci)
+          : selectedPictureRef.type === 'shape' || selectedPictureRef.type === 'line'
+            ? wasm.getShapeProperties(selectedPictureRef.sec, selectedPictureRef.ppi, selectedPictureRef.ci)
+            : null,
+      };
+    } catch (error) {
+      console.warn('[rhwp-postmessage] 현재 개체 컨텍스트 조회 실패:', error);
+    }
+  }
+
+  return {
+    context,
+    selection,
+    cursor,
+    selectedTableRef: selectedTableRef ? {
+      secIdx: selectedTableRef.sec,
+      paraIdx: selectedTableRef.ppi,
+      controlIdx: selectedTableRef.ci,
+      cellPath: selectedTableRef.cellPath ?? null,
+    } : null,
+    selectedPictureRef: selectedPictureRef ? {
+      secIdx: selectedPictureRef.sec,
+      paraIdx: selectedPictureRef.ppi,
+      controlIdx: selectedPictureRef.ci,
+      objectType: selectedPictureRef.type,
+      cellIdx: selectedPictureRef.cellIdx,
+      cellParaIdx: selectedPictureRef.cellParaIdx,
+    } : null,
+    selectedCellRange: selectedCellRange ?? null,
+    currentTable,
+    currentCell,
+    currentPicture,
+  };
+}
+
+function getSelectionStyleSnapshot(): any {
+  const selection = inputHandler?.getSelection();
+  const cursor = (inputHandler?.getCursorPosition?.() ?? inputHandler?.getPosition?.() ?? null) as Record<string, unknown> | null;
+  const anchor = (selection?.start as Record<string, unknown> | undefined) ?? cursor;
+  if (!anchor) {
+    return {
+      hasSelection: false,
+      charProps: null,
+      paraProps: null,
+    };
+  }
+
+  try {
+    if (anchor.parentParaIndex !== undefined) {
+      return {
+        hasSelection: !!selection,
+        charProps: wasm.getCellCharPropertiesAt(
+          Number(anchor.sectionIndex),
+          Number(anchor.parentParaIndex),
+          Number(anchor.controlIndex),
+          Number(anchor.cellIndex),
+          Number(anchor.cellParaIndex ?? 0),
+          Number(anchor.charOffset ?? 0),
+        ),
+        paraProps: wasm.getCellParaPropertiesAt(
+          Number(anchor.sectionIndex),
+          Number(anchor.parentParaIndex),
+          Number(anchor.controlIndex),
+          Number(anchor.cellIndex),
+          Number(anchor.cellParaIndex ?? 0),
+        ),
+      };
+    }
+
+    return {
+      hasSelection: !!selection,
+      charProps: wasm.getCharPropertiesAt(Number(anchor.sectionIndex), Number(anchor.paragraphIndex), Number(anchor.charOffset ?? 0)),
+      paraProps: wasm.getParaPropertiesAt(Number(anchor.sectionIndex), Number(anchor.paragraphIndex)),
+    };
+  } catch (error) {
+    console.warn('[rhwp-postmessage] 선택 영역 스타일 조회 실패:', error);
+    return {
+      hasSelection: !!selection,
+      charProps: null,
+      paraProps: null,
+    };
+  }
 }
 
 function replaceBodyParagraphText(secIdx: number, paraIdx: number, text: string): void {
@@ -1733,6 +1881,12 @@ window.addEventListener('message', async (e) => {
         break;
       case 'getSelectionContext':
         reply(getSelectionContext());
+        break;
+      case 'getEditorModeSnapshot':
+        reply(getEditorModeSnapshot());
+        break;
+      case 'getSelectionStyleSnapshot':
+        reply(getSelectionStyleSnapshot());
         break;
       case 'getToolCatalog':
         reply({
