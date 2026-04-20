@@ -2,7 +2,7 @@
 //!
 //! 문서 전체에서 필드를 재귀 탐색하여 조회·설정하는 기능을 제공한다.
 
-use crate::document_core::DocumentCore;
+use crate::document_core::{get_textbox_from_shape_mut, DocumentCore};
 use crate::model::control::{Control, Field, FieldType};
 use crate::model::paragraph::Paragraph;
 use crate::error::HwpError;
@@ -112,9 +112,19 @@ impl DocumentCore {
         let location = fi.location.clone();
         let fri = fi.field_range_index;
         let old_value = fi.value.clone();
+        let is_cell_field = fi.field.ctrl_id == 0; // 가상 셀 필드
 
         let section_index = location.section_index;
-        self.set_field_text_at(&location, fri, value)?;
+
+        if is_cell_field {
+            self.set_cell_field_text(&location, value)?;
+        } else {
+            self.set_field_text_at(&location, fri, value)?;
+        }
+
+        if let Some(sec) = self.document.sections.get_mut(section_index) {
+            sec.raw_stream = None;
+        }
         self.recompose_section(section_index);
 
         Ok(format!(
@@ -167,26 +177,21 @@ impl DocumentCore {
         if location.nested_path.is_empty() {
             return Err(HwpError::InvalidField("셀 필드 위치에 중첩 경로 없음".into()));
         }
-        let entry = &location.nested_path[0];
+        let parent_para = self.get_para_mut_at_nested_prefix(location, location.nested_path.len() - 1)?;
+        let entry = location.nested_path.last()
+            .ok_or_else(|| HwpError::InvalidField("셀 필드 경로가 비어 있습니다".into()))?;
         match entry {
-            NestedEntry::TableCell { control_index, cell_index, .. } => {
-                let sec = self.document.sections.get_mut(location.section_index)
-                    .ok_or_else(|| HwpError::InvalidField("구역 초과".into()))?;
-                let para = sec.paragraphs.get_mut(location.para_index)
-                    .ok_or_else(|| HwpError::InvalidField("문단 초과".into()))?;
-                let table = match para.controls.get_mut(*control_index) {
+            NestedEntry::TableCell { control_index, cell_index, para_index } => {
+                let table = match parent_para.controls.get_mut(*control_index) {
                     Some(Control::Table(t)) => t,
                     _ => return Err(HwpError::InvalidField("컨트롤이 표가 아님".into())),
                 };
                 let cell = table.cells.get_mut(*cell_index)
                     .ok_or_else(|| HwpError::InvalidField("셀 인덱스 초과".into()))?;
-                // 첫 문단의 텍스트를 교체
-                if let Some(cell_para) = cell.paragraphs.first_mut() {
-                    cell_para.text = value.to_string();
-                    // char_offsets 재생성
-                    let new_len = value.chars().count();
-                    cell_para.char_offsets = (0..new_len).map(|i| i as u32).collect();
-                }
+                let cell_para = cell.paragraphs.get_mut(*para_index)
+                    .ok_or_else(|| HwpError::InvalidField("셀 문단 인덱스 초과".into()))?;
+                cell_para.text = value.to_string();
+                rebuild_char_offsets(cell_para);
                 Ok(())
             }
             _ => Err(HwpError::InvalidField("셀 필드가 아닌 위치".into())),
@@ -238,49 +243,68 @@ impl DocumentCore {
 
     /// FieldLocation에 해당하는 Paragraph의 가변 참조를 반환한다.
     ///
-    /// 중첩 경로는 1단계만 지원 (표 셀 또는 글상자 내 문단).
     fn get_para_mut_at_location(&mut self, location: &FieldLocation) -> Result<&mut Paragraph, HwpError> {
+        self.get_para_mut_at_nested_prefix(location, location.nested_path.len())
+    }
+
+    fn get_para_mut_at_nested_prefix(
+        &mut self,
+        location: &FieldLocation,
+        prefix_len: usize,
+    ) -> Result<&mut Paragraph, HwpError> {
         let sec = self.document.sections.get_mut(location.section_index)
             .ok_or_else(|| HwpError::InvalidField("구역 인덱스 초과".into()))?;
         let host_para = sec.paragraphs.get_mut(location.para_index)
             .ok_or_else(|| HwpError::InvalidField("문단 인덱스 초과".into()))?;
 
-        if location.nested_path.is_empty() {
+        if prefix_len == 0 {
             return Ok(host_para);
         }
 
-        // 1단계 중첩만 처리
-        let entry = &location.nested_path[0];
-        match entry {
-            NestedEntry::TableCell { control_index, cell_index, para_index } => {
-                let ctrl = host_para.controls.get_mut(*control_index)
-                    .ok_or_else(|| HwpError::InvalidField("컨트롤 인덱스 초과".into()))?;
-                if let Control::Table(ref mut table) = ctrl {
-                    let cell = table.cells.get_mut(*cell_index)
-                        .ok_or_else(|| HwpError::InvalidField("셀 인덱스 초과".into()))?;
-                    cell.paragraphs.get_mut(*para_index)
-                        .ok_or_else(|| HwpError::InvalidField("셀 문단 인덱스 초과".into()))
-                } else {
-                    Err(HwpError::InvalidField("예상된 Table 컨트롤이 아님".into()))
-                }
-            }
-            NestedEntry::TextBox { control_index, para_index } => {
-                let ctrl = host_para.controls.get_mut(*control_index)
-                    .ok_or_else(|| HwpError::InvalidField("컨트롤 인덱스 초과".into()))?;
-                if let Control::Shape(ref mut shape) = ctrl {
-                    let drawing = shape.drawing_mut()
-                        .ok_or_else(|| HwpError::InvalidField("Shape에 DrawingObjAttr 없음".into()))?;
-                    let tb = drawing.text_box.as_mut()
-                        .ok_or_else(|| HwpError::InvalidField("Shape에 TextBox 없음".into()))?;
-                    tb.paragraphs.get_mut(*para_index)
-                        .ok_or_else(|| HwpError::InvalidField("글상자 문단 인덱스 초과".into()))
-                } else {
-                    Err(HwpError::InvalidField("예상된 Shape 컨트롤이 아님".into()))
-                }
-            }
-        }
+        get_para_mut_from_nested_path(host_para, &location.nested_path[..prefix_len])
+    }
+}
+
+fn get_para_mut_from_nested_path<'a>(
+    para: &'a mut Paragraph,
+    path: &[NestedEntry],
+) -> Result<&'a mut Paragraph, HwpError> {
+    if path.is_empty() {
+        return Ok(para);
     }
 
+    let entry = &path[0];
+    let child_para = match entry {
+        NestedEntry::TableCell { control_index, cell_index, para_index } => {
+            let ctrl = para.controls.get_mut(*control_index)
+                .ok_or_else(|| HwpError::InvalidField("컨트롤 인덱스 초과".into()))?;
+            if let Control::Table(ref mut table) = ctrl {
+                let cell = table.cells.get_mut(*cell_index)
+                    .ok_or_else(|| HwpError::InvalidField("셀 인덱스 초과".into()))?;
+                cell.paragraphs.get_mut(*para_index)
+                    .ok_or_else(|| HwpError::InvalidField("셀 문단 인덱스 초과".into()))?
+            } else {
+                return Err(HwpError::InvalidField("예상된 Table 컨트롤이 아님".into()));
+            }
+        }
+        NestedEntry::TextBox { control_index, para_index } => {
+            let ctrl = para.controls.get_mut(*control_index)
+                .ok_or_else(|| HwpError::InvalidField("컨트롤 인덱스 초과".into()))?;
+            if let Control::Shape(ref mut shape) = ctrl {
+                let tb = get_textbox_from_shape_mut(shape)
+                    .ok_or_else(|| HwpError::InvalidField("Shape에 TextBox 없음".into()))?;
+                tb.paragraphs.get_mut(*para_index)
+                    .ok_or_else(|| HwpError::InvalidField("글상자 문단 인덱스 초과".into()))?
+            } else {
+                return Err(HwpError::InvalidField("예상된 Shape 컨트롤이 아님".into()));
+            }
+        }
+    };
+
+    get_para_mut_from_nested_path(child_para, &path[1..])
+}
+
+impl DocumentCore {
     /// 본문 문단의 커서 위치에서 필드를 제거한다 (텍스트 유지, 필드 마커만 삭제).
     ///
     /// 성공 시 `{"ok":true}`, 필드가 없으면 에러를 반환한다.

@@ -1876,6 +1876,9 @@ window.addEventListener('message', async (e) => {
       case 'getDocumentInfo':
         reply(wasm.getDocumentInfo());
         break;
+      case 'getSourceFormat':
+        reply(wasm.getSourceFormat());
+        break;
       case 'getDocumentStructure':
         reply(await getDocumentStructure(!!params.includeImages));
         break;
@@ -1949,6 +1952,9 @@ window.addEventListener('message', async (e) => {
         break;
       case 'exportHwp':
         reply(Array.from(wasm.exportHwp()));
+        break;
+      case 'exportHwpx':
+        reply(Array.from(wasm.exportHwpx()));
         break;
       case 'ready':
         reply(appReady);
