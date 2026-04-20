@@ -1607,6 +1607,14 @@ export class InputHandler {
     _picture.exitPictureObjectSelectionIfNeeded.call(this);
   }
 
+  /** 표 객체 선택을 해제한다 (있으면) */
+  private exitTableObjectSelectionIfNeeded(): void {
+    if (!this.cursor.isInTableObjectSelection()) return;
+    this.cursor.exitTableObjectSelection();
+    this.tableObjectRenderer?.clear();
+    this.eventBus.emit('table-object-selection-changed', false);
+  }
+
   /** 클릭 좌표가 글상자의 경계선 위인지 판정한다 */
   private isShapeBorderClick(
     pageX: number, pageY: number,
@@ -1894,13 +1902,36 @@ export class InputHandler {
   /** 현재 커서 위치를 반환한다 */
   getCursorPosition(): DocumentPosition { return this.cursor.getPosition(); }
 
+  private getRectForPosition(pos: DocumentPosition): CursorRect | null {
+    try {
+      if (pos.cellPath?.length && pos.parentParaIndex !== undefined) {
+        return this.wasm.getCursorRectByPath(
+          pos.sectionIndex,
+          pos.parentParaIndex,
+          JSON.stringify(pos.cellPath),
+          pos.charOffset,
+        );
+      }
+      if (pos.parentParaIndex !== undefined) {
+        return this.wasm.getCursorRectInCell(
+          pos.sectionIndex,
+          pos.parentParaIndex,
+          pos.controlIndex!,
+          pos.cellIndex!,
+          pos.cellParaIndex ?? 0,
+          pos.charOffset,
+        );
+      }
+      return this.wasm.getCursorRect(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
+    } catch {
+      return null;
+    }
+  }
+
   /** 커서를 지정 위치로 이동하고 캐럿을 표시한다. 성공하면 true 반환. */
   moveCursorTo(pos: DocumentPosition): boolean {
-    // 이동 전 위치가 유효한지 사전 검증 (경고 로그 방지)
-    try {
-      const testRect = this.wasm.getCursorRect(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
-      if (!testRect || testRect.pageIndex === undefined) return false;
-    } catch {
+    const testRect = this.getRectForPosition(pos);
+    if (!testRect || testRect.pageIndex === undefined) {
       return false;
     }
 
@@ -1917,6 +1948,78 @@ export class InputHandler {
     }
     this.focusTextarea();
     return false;
+  }
+
+  /** 지정 범위를 텍스트 선택 상태로 만든다. */
+  selectRange(start: DocumentPosition, end: DocumentPosition): boolean {
+    const startRect = this.getRectForPosition(start);
+    const endRect = this.getRectForPosition(end);
+    if (!startRect || !endRect) {
+      return false;
+    }
+
+    this.exitTableObjectSelectionIfNeeded();
+    this.exitPictureObjectSelectionIfNeeded();
+    if (this.cursor.isInCellSelectionMode()) {
+      this.exitCellSelectionMode();
+    }
+
+    this.cursor.clearSelection();
+    this.cursor.moveTo(start);
+    this.cursor.setAnchor();
+    this.cursor.moveTo(end);
+    this.cursor.resetPreferredX();
+    this.active = true;
+    this.updateCaret();
+    this.updateSelection();
+    this.focusTextarea();
+    return true;
+  }
+
+  /** 문단 전체를 텍스트 선택한다. */
+  selectParagraph(sectionIndex: number, paragraphIndex: number): boolean {
+    const length = this.wasm.getParagraphLength(sectionIndex, paragraphIndex);
+    return this.selectRange(
+      { sectionIndex, paragraphIndex, charOffset: 0 },
+      { sectionIndex, paragraphIndex, charOffset: Math.max(0, length) },
+    );
+  }
+
+  /** 표 객체를 선택 상태로 만든다. */
+  selectTableObject(sec: number, ppi: number, ci: number): boolean {
+    this.cursor.clearSelection();
+    if (this.cursor.isInCellSelectionMode()) {
+      this.exitCellSelectionMode();
+    }
+    this.exitPictureObjectSelectionIfNeeded();
+    this.active = true;
+    this.cursor.enterTableObjectSelectionDirect(sec, ppi, ci);
+    this.caret.hide();
+    this.selectionRenderer.clear();
+    this.renderTableObjectSelection();
+    this.eventBus.emit('table-object-selection-changed', true);
+    this.focusTextarea();
+    return true;
+  }
+
+  /** 표의 특정 셀을 선택 상태로 만든다. */
+  selectTableCell(sec: number, ppi: number, ci: number, cellIdx: number): boolean {
+    const ok = this.moveCursorTo({
+      sectionIndex: sec,
+      paragraphIndex: 0,
+      charOffset: 0,
+      parentParaIndex: ppi,
+      controlIndex: ci,
+      cellIndex: cellIdx,
+      cellParaIndex: 0,
+    });
+    if (!ok) {
+      return false;
+    }
+    this.cursor.enterCellSelectionMode();
+    this.updateCellSelection();
+    this.focusTextarea();
+    return true;
   }
 
   /** 현재 커서 위치의 누름틀 필드를 제거한다 (텍스트 유지). */

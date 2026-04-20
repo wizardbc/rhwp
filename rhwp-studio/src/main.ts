@@ -5,7 +5,7 @@ import { CanvasView } from '@/view/canvas-view';
 import { InputHandler } from '@/engine/input-handler';
 import { Toolbar } from '@/ui/toolbar';
 import { MenuBar } from '@/ui/menu-bar';
-import { loadWebFonts } from '@/core/font-loader';
+import { getDetectedOSFonts, loadWebFonts, REGISTERED_FONTS } from '@/core/font-loader';
 import { CommandRegistry } from '@/command/registry';
 import { CommandDispatcher } from '@/command/dispatcher';
 import type { EditorContext, CommandServices } from '@/command/types';
@@ -38,6 +38,17 @@ let canvasView: CanvasView | null = null;
 let inputHandler: InputHandler | null = null;
 let toolbar: Toolbar | null = null;
 let ruler: Ruler | null = null;
+let appReady = false;
+
+function notifyParentDocumentLoaded(fileName: string, docInfo: DocumentInfo): void {
+  if (window.parent === window) return;
+  window.parent.postMessage({
+    type: 'rhwp-document-loaded',
+    fileName,
+    pageCount: docInfo.pageCount,
+    sectionCount: docInfo.sectionCount ?? 1,
+  }, '*');
+}
 
 
 // ─── 커맨드 시스템 ─────────────────────────────
@@ -82,6 +93,113 @@ registry.registerAll(tableCommands);
 registry.registerAll(pageCommands);
 registry.registerAll(toolCommands);
 
+function getCommandCatalog(): any {
+  const ctx = getContext();
+  return registry.getAllIds()
+    .map((id) => {
+      const command = registry.get(id);
+      if (!command) return null;
+      return {
+        id,
+        label: command.label,
+        shortcutLabel: command.shortcutLabel,
+        icon: command.icon,
+        enabled: command.canExecute ? command.canExecute(ctx) : true,
+      };
+    })
+    .filter(Boolean)
+    .sort((left: any, right: any) => left.id.localeCompare(right.id));
+}
+
+function getPrimitiveToolCatalog(): any[] {
+  return [
+    {
+      id: 'selectTarget',
+      label: '대상 선택',
+      scope: 'document',
+      description: '문단, 표, 표 셀 같은 대상을 먼저 선택하거나 커서를 이동해 이후 편집의 기준점을 만듭니다.',
+    },
+    {
+      id: 'executeCommand',
+      label: '에디터 명령 호출',
+      scope: 'document',
+      description: 'rhwp-studio가 노출한 명령을 직접 실행합니다. 대화상자를 띄우지 않는 즉시 실행 명령에 적합합니다.',
+    },
+    {
+      id: 'moveCursor',
+      label: '커서 이동',
+      scope: 'cursor',
+      description: '문단, 페이지, 검색어 기준으로 커서를 이동합니다.',
+    },
+    {
+      id: 'replaceSelectionOrInsert',
+      label: '선택/커서 텍스트 반영',
+      scope: 'selection',
+      description: '선택된 텍스트를 교체하거나 커서 위치에 새 텍스트를 넣습니다.',
+    },
+    {
+      id: 'insertAtCursor',
+      label: '커서 위치 삽입',
+      scope: 'cursor',
+      description: '현재 커서 위치에 문구나 줄바꿈을 추가합니다.',
+    },
+    {
+      id: 'replaceParagraph',
+      label: '문단 교체',
+      scope: 'document',
+      description: '특정 섹션/문단의 내용을 통째로 교체합니다.',
+    },
+    {
+      id: 'applySelectionCharStyle',
+      label: '선택 글자 서식',
+      scope: 'selection',
+      description: '선택 영역의 글자색, 배경색, 폰트, 크기, 굵기 등을 바꿉니다.',
+    },
+    {
+      id: 'applySelectionParaStyle',
+      label: '선택 문단 서식',
+      scope: 'selection',
+      description: '선택 영역의 정렬, 줄 간격, 들여쓰기, 문단 테두리/배경 등을 바꿉니다.',
+    },
+    {
+      id: 'setCurrentCellProperties',
+      label: '표 셀 속성',
+      scope: 'table',
+      description: '현재 셀 또는 선택된 셀 범위의 배경색, 테두리, 패딩, 정렬을 바꿉니다.',
+    },
+    {
+      id: 'setCurrentTableProperties',
+      label: '표 속성',
+      scope: 'table',
+      description: '현재 표의 배경, 테두리, 배치, 여백, 캡션 관련 속성을 바꿉니다.',
+    },
+    {
+      id: 'fillTargetValue',
+      label: '단일 필드/셀 채우기',
+      scope: 'document',
+      description: '필드, 표 셀, 본문 문단 중 특정 대상을 지정해 값을 채웁니다.',
+    },
+    {
+      id: 'fillManyTargets',
+      label: '다중 필드/셀 채우기',
+      scope: 'document',
+      description: '여러 필드와 셀을 한 번에 채웁니다.',
+    },
+    {
+      id: 'searchText',
+      label: '문서 검색',
+      scope: 'document',
+      description: '문서 전체에서 텍스트를 찾아 관련 위치를 파악합니다.',
+    },
+    {
+      id: 'getPagePng',
+      label: '페이지 렌더',
+      scope: 'page',
+      description: '페이지를 PNG 이미지로 렌더링해 시각적으로 판단할 수 있게 합니다.',
+    },
+  ];
+}
+
 // 상태 바 요소
 const sbMessage = () => document.getElementById('sb-message')!;
 const sbPage = () => document.getElementById('sb-page')!;
@@ -91,6 +209,7 @@ const sbZoomVal = () => document.getElementById('sb-zoom-val')!;
 async function initialize(): Promise<void> {
   const msg = sbMessage();
   try {
+    appReady = false;
     msg.textContent = '웹폰트 로딩 중...';
     await loadWebFonts([]);  // CSS @font-face 등록 + CRITICAL 폰트만 로드
     msg.textContent = 'WASM 로딩 중...';
@@ -187,7 +306,9 @@ async function initialize(): Promise<void> {
       (window as any).__inputHandler = inputHandler;
       (window as any).__canvasView = canvasView;
     }
+    appReady = true;
   } catch (error) {
+    appReady = false;
     msg.textContent = `WASM 초기화 실패: ${error}`;
     console.error('[main] WASM 초기화 실패:', error);
   }
@@ -446,6 +567,7 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
     } catch (e) {
       console.warn('[validation] 감지/보정 실패 (치명적이지 않음):', e);
     }
+    notifyParentDocumentLoaded(wasm.fileName, docInfo);
   } catch (error) {
     console.error('[initDoc] 오류:', error);
     if (window.innerWidth < 768) alert(`초기화 오류: ${error}`);
@@ -584,6 +706,964 @@ async function loadFromUrlParam(): Promise<void> {
   }
 }
 
+function stripHtmlTags(html: string): string {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  return (tmp.textContent || '').replace(/\u00a0/g, ' ').trim();
+}
+
+async function svgToPngDataUrl(svg: string): Promise<string> {
+  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = url;
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('SVG 렌더링 실패'));
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width || 1;
+    canvas.height = img.height || 1;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas 2D 컨텍스트를 만들 수 없습니다');
+    ctx.drawImage(img, 0, 0);
+    return canvas.toDataURL('image/png');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function getCursorPageIndex(pos: any): number {
+  try {
+    if (!pos) return 0;
+    if (pos.parentParaIndex !== undefined) {
+      if (pos.cellPath?.length) {
+        const rect = wasm.getCursorRectByPath(pos.sectionIndex, pos.parentParaIndex, JSON.stringify(pos.cellPath), pos.charOffset);
+        return rect?.pageIndex ?? 0;
+      }
+      if (pos.isTextBox) {
+        const rect = wasm.getCursorRectInCell(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex, pos.cellParaIndex, pos.charOffset);
+        return rect?.pageIndex ?? 0;
+      }
+      const rect = wasm.getCursorRectInCell(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex, pos.cellParaIndex, pos.charOffset);
+      return rect?.pageIndex ?? 0;
+    }
+    const rect = wasm.getCursorRect(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
+    return rect?.pageIndex ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function getSelectionContext(): any {
+  const selection = inputHandler?.getSelection();
+  const cursor = inputHandler?.getCursorPosition?.() ?? inputHandler?.getPosition?.() ?? null;
+  const pageIndex = selection ? getCursorPageIndex(selection.start) : getCursorPageIndex(cursor);
+  const selectedTableRef = inputHandler?.getSelectedTableRef?.() ?? null;
+  const selectedCellRange = inputHandler?.getSelectedCellRange?.() ?? null;
+  let selectedHtml = '';
+  let selectedText = '';
+
+  if (selection) {
+    const { start, end } = selection;
+    try {
+      if (start.parentParaIndex !== undefined && end.parentParaIndex !== undefined) {
+        if (start.cellPath?.length || end.cellPath?.length) {
+          if (JSON.stringify(start.cellPath ?? []) === JSON.stringify(end.cellPath ?? [])
+            && start.parentParaIndex === end.parentParaIndex
+            && start.cellParaIndex === end.cellParaIndex) {
+            const pathJson = JSON.stringify(start.cellPath ?? []);
+            const count = Math.max(0, end.charOffset - start.charOffset);
+            selectedText = wasm.getTextInCellByPath(start.sectionIndex, start.parentParaIndex, pathJson, start.charOffset, count);
+            selectedHtml = `<p>${selectedText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`;
+          }
+        } else if (
+          start.parentParaIndex === end.parentParaIndex
+          && start.controlIndex === end.controlIndex
+          && start.cellIndex === end.cellIndex
+        ) {
+          const controlIndex = start.controlIndex;
+          const cellIndex = start.cellIndex;
+          if (controlIndex === undefined || cellIndex === undefined) {
+            throw new Error('셀 선택 정보가 불완전합니다');
+          }
+          selectedHtml = wasm.exportSelectionInCellHtml(
+            start.sectionIndex,
+            start.parentParaIndex,
+            controlIndex,
+            cellIndex,
+            start.cellParaIndex ?? 0,
+            start.charOffset,
+            end.cellParaIndex ?? 0,
+            end.charOffset,
+          );
+        }
+      } else {
+        selectedHtml = wasm.exportSelectionHtml(
+          start.sectionIndex,
+          start.paragraphIndex,
+          start.charOffset,
+          end.paragraphIndex,
+          end.charOffset,
+        );
+      }
+    } catch (error) {
+      console.warn('[rhwp-postmessage] 선택 영역 export 실패:', error);
+    }
+    if (!selectedText && selectedHtml) {
+      selectedText = stripHtmlTags(selectedHtml);
+    }
+  }
+
+  return {
+    hasSelection: !!selection,
+    selection,
+    cursor,
+    pageIndex,
+    tableObjectSelection: selectedTableRef ? {
+      secIdx: selectedTableRef.sec,
+      paraIdx: selectedTableRef.ppi,
+      controlIdx: selectedTableRef.ci,
+    } : null,
+    cellSelection: selectedCellRange ?? null,
+    selectedHtml,
+    selectedText,
+    documentInfo: wasm.getDocumentInfo(),
+  };
+}
+
+function replaceBodyParagraphText(secIdx: number, paraIdx: number, text: string): void {
+  const paraLen = wasm.getParagraphLength(secIdx, paraIdx);
+  if (paraLen > 0) {
+    wasm.deleteRange(secIdx, paraIdx, 0, paraIdx, paraLen);
+  }
+  wasm.insertText(secIdx, paraIdx, 0, text);
+}
+
+function applyFieldValueWithFallback(target: any, text: string) {
+  try {
+    wasm.setFieldValueByName(target.name, text);
+    return;
+  } catch (error) {
+    console.warn('[fillFormValues] field API fallback', target.name, error);
+  }
+
+  const location = target.location;
+  if (!location || typeof location.sectionIndex !== 'number' || typeof location.paraIndex !== 'number') {
+    throw new Error(`필드 위치 정보를 찾지 못했습니다: ${target.name ?? 'unknown field'}`);
+  }
+
+  const firstPath = Array.isArray(location.path) ? location.path[0] : undefined;
+  if (
+    firstPath?.type === 'cell' &&
+    typeof firstPath.controlIndex === 'number' &&
+    typeof firstPath.cellIndex === 'number'
+  ) {
+    replaceTopLevelCellText({
+      secIdx: location.sectionIndex,
+      paraIdx: location.paraIndex,
+      controlIdx: firstPath.controlIndex,
+      cellIdx: firstPath.cellIndex,
+    }, text);
+    return;
+  }
+
+  replaceBodyParagraphText(location.sectionIndex, location.paraIndex, text);
+}
+
+function fillFormValuesDirect(entries: Array<{ target: any; value: string }>): void {
+  for (const entry of entries) {
+    if (!entry?.target) continue;
+    const value = entry.value ?? '';
+    if (entry.target.kind === 'fieldByName') {
+      applyFieldValueWithFallback(entry.target, value);
+      continue;
+    }
+    if (entry.target.kind === 'tableCell') {
+      replaceTopLevelCellText(entry.target, value);
+      continue;
+    }
+    if (entry.target.kind === 'bodyParagraph') {
+      replaceBodyParagraphText(entry.target.secIdx, entry.target.paraIdx, value);
+    }
+  }
+}
+
+function applyTextEditDirect(text: string): any {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  const selection = inputHandler.getSelection();
+  const normalized = text.replace(/\r\n/g, '\n');
+
+  if (selection) {
+    const { start, end } = selection;
+    if (start.parentParaIndex !== undefined && end.parentParaIndex !== undefined) {
+      if (start.cellPath?.length || end.cellPath?.length) {
+        const samePath = JSON.stringify(start.cellPath ?? []) === JSON.stringify(end.cellPath ?? []);
+        if (!samePath || start.parentParaIndex !== end.parentParaIndex || start.cellParaIndex !== end.cellParaIndex) {
+          throw new Error('중첩 표 선택 편집은 현재 단일 문단 범위만 지원합니다');
+        }
+        const pathJson = JSON.stringify(start.cellPath ?? []);
+        const deleteCount = Math.max(0, end.charOffset - start.charOffset);
+        if (deleteCount > 0) {
+          wasm.deleteTextInCellByPath(start.sectionIndex, start.parentParaIndex, pathJson, start.charOffset, deleteCount);
+        }
+        wasm.insertTextInCellByPath(start.sectionIndex, start.parentParaIndex, pathJson, start.charOffset, normalized);
+        return {
+          ...start,
+          charOffset: start.charOffset + normalized.length,
+        };
+      } else {
+        wasm.deleteRangeInCell(
+          start.sectionIndex,
+          start.parentParaIndex,
+          start.controlIndex!,
+          start.cellIndex!,
+          start.cellParaIndex ?? 0,
+          start.charOffset,
+          end.cellParaIndex ?? 0,
+          end.charOffset,
+        );
+        wasm.insertTextInCell(
+          start.sectionIndex,
+          start.parentParaIndex,
+          start.controlIndex!,
+          start.cellIndex!,
+          start.cellParaIndex ?? 0,
+          start.charOffset,
+          normalized,
+        );
+        return {
+          ...start,
+          charOffset: start.charOffset + normalized.length,
+        };
+      }
+    } else {
+      wasm.deleteRange(
+        start.sectionIndex,
+        start.paragraphIndex,
+        start.charOffset,
+        end.paragraphIndex,
+        end.charOffset,
+      );
+      wasm.insertText(start.sectionIndex, start.paragraphIndex, start.charOffset, normalized);
+      return {
+        ...start,
+        charOffset: start.charOffset + normalized.length,
+      };
+    }
+  } else {
+    const pos = inputHandler.getCursorPosition();
+    if (!pos) throw new Error('커서 위치를 찾을 수 없습니다');
+    if (pos.parentParaIndex !== undefined) {
+      if (pos.cellPath?.length) {
+        wasm.insertTextInCellByPath(pos.sectionIndex, pos.parentParaIndex, JSON.stringify(pos.cellPath), pos.charOffset, normalized);
+      } else {
+        wasm.insertTextInCell(
+          pos.sectionIndex,
+          pos.parentParaIndex,
+          pos.controlIndex!,
+          pos.cellIndex!,
+          pos.cellParaIndex ?? 0,
+          pos.charOffset,
+          normalized,
+        );
+      }
+    } else {
+      wasm.insertText(pos.sectionIndex, pos.paragraphIndex, pos.charOffset, normalized);
+    }
+    return {
+      ...pos,
+      charOffset: pos.charOffset + normalized.length,
+    };
+  }
+}
+
+function applyTextEdit(text: string): any {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType: 'ai-text-edit',
+    operation: () => {
+      return applyTextEditDirect(text);
+    },
+  });
+  return getSelectionContext();
+}
+
+function replaceTopLevelCellText(target: any, text: string): void {
+  const paraCount = wasm.getCellParagraphCount(target.secIdx, target.paraIdx, target.controlIdx, target.cellIdx);
+  if (paraCount > 0) {
+    const lastParaIdx = paraCount - 1;
+    const lastLen = wasm.getCellParagraphLength(target.secIdx, target.paraIdx, target.controlIdx, target.cellIdx, lastParaIdx);
+    wasm.deleteRangeInCell(
+      target.secIdx,
+      target.paraIdx,
+      target.controlIdx,
+      target.cellIdx,
+      0,
+      0,
+      lastParaIdx,
+      lastLen,
+    );
+  }
+  wasm.insertTextInCell(target.secIdx, target.paraIdx, target.controlIdx, target.cellIdx, 0, 0, text);
+}
+
+function normalizeCharStyleProps(props: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...props };
+  const fontName = typeof next.fontName === 'string' ? next.fontName.trim() : '';
+  if (fontName && next.fontId === undefined) {
+    const fontId = wasm.findOrCreateFontId(fontName);
+    if (fontId >= 0) {
+      next.fontId = fontId;
+    }
+    delete next.fontName;
+  }
+  return next;
+}
+
+function applySelectionCharStyle(props: Record<string, unknown>): void {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  const selection = inputHandler.getSelection();
+  if (!selection) {
+    throw new Error('글자 서식을 적용할 선택 영역이 없습니다.');
+  }
+  const normalizedProps = normalizeCharStyleProps(props);
+  const propsJson = JSON.stringify(normalizedProps);
+  const { start, end } = selection;
+
+  if (start.parentParaIndex !== undefined) {
+    const sec = start.sectionIndex;
+    const parentPara = start.parentParaIndex;
+    const controlIdx = start.controlIndex!;
+    const cellIdx = start.cellIndex!;
+    const startPara = start.cellParaIndex ?? 0;
+    const endPara = end.cellParaIndex ?? startPara;
+
+    for (let paraIndex = startPara; paraIndex <= endPara; paraIndex += 1) {
+      const from = paraIndex === startPara ? start.charOffset : 0;
+      const to = paraIndex === endPara
+        ? end.charOffset
+        : wasm.getCellParagraphLength(sec, parentPara, controlIdx, cellIdx, paraIndex);
+      if (to <= from) continue;
+      wasm.applyCharFormatInCell(sec, parentPara, controlIdx, cellIdx, paraIndex, from, to, propsJson);
+    }
+    return;
+  }
+
+  for (let paragraphIndex = start.paragraphIndex; paragraphIndex <= end.paragraphIndex; paragraphIndex += 1) {
+    const from = paragraphIndex === start.paragraphIndex ? start.charOffset : 0;
+    const to = paragraphIndex === end.paragraphIndex ? end.charOffset : wasm.getParagraphLength(start.sectionIndex, paragraphIndex);
+    if (to <= from) continue;
+    wasm.applyCharFormat(start.sectionIndex, paragraphIndex, from, to, propsJson);
+  }
+}
+
+function applySelectionParaStyle(props: Record<string, unknown>): void {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  const selection = inputHandler.getSelection();
+  const cursor = inputHandler.getCursorPosition();
+  if (!cursor) {
+    throw new Error('문단 서식을 적용할 커서 위치를 찾을 수 없습니다.');
+  }
+  const range = selection ?? { start: cursor, end: cursor };
+  const propsJson = JSON.stringify(props);
+
+  if (range.start.parentParaIndex !== undefined) {
+    wasm.applyParaFormatInCell(
+      range.start.sectionIndex,
+      range.start.parentParaIndex,
+      range.start.controlIndex!,
+      range.start.cellIndex!,
+      range.start.cellParaIndex ?? 0,
+      propsJson,
+    );
+    return;
+  }
+
+  for (let paragraphIndex = range.start.paragraphIndex; paragraphIndex <= range.end.paragraphIndex; paragraphIndex += 1) {
+    wasm.applyParaFormat(range.start.sectionIndex, paragraphIndex, propsJson);
+  }
+}
+
+function collectSelectedCellIndices(sec: number, parentPara: number, controlIdx: number): number[] {
+  if (!inputHandler) return [];
+  const range = inputHandler.getSelectedCellRange?.();
+  if (!range) {
+    const pos = inputHandler.getCursorPosition();
+    return typeof pos?.cellIndex === 'number' ? [pos.cellIndex] : [];
+  }
+
+  const cells = wasm.getTableCellBboxes(sec, parentPara, controlIdx);
+  return cells
+    .filter((cell) => {
+      const cellEndRow = cell.row + cell.rowSpan - 1;
+      const cellEndCol = cell.col + cell.colSpan - 1;
+      return cell.row <= range.endRow
+        && cellEndRow >= range.startRow
+        && cell.col <= range.endCol
+        && cellEndCol >= range.startCol;
+    })
+    .map((cell) => cell.cellIdx);
+}
+
+function setCurrentCellProperties(props: Record<string, unknown>): void {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  const pos = inputHandler.getCursorPosition();
+  if (pos.parentParaIndex === undefined || pos.controlIndex === undefined) {
+    throw new Error('표 셀 내부에서만 셀 속성을 바꿀 수 있습니다.');
+  }
+
+  const cellIndices = collectSelectedCellIndices(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex);
+  if (!cellIndices.length) {
+    throw new Error('속성을 바꿀 셀을 찾지 못했습니다.');
+  }
+
+  for (const cellIdx of cellIndices) {
+    wasm.setCellProperties(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, cellIdx, props);
+  }
+}
+
+function setCurrentTableProperties(props: Record<string, unknown>): void {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  const pos = inputHandler.getCursorPosition();
+  if (pos.parentParaIndex === undefined || pos.controlIndex === undefined) {
+    throw new Error('표 내부에서만 표 속성을 바꿀 수 있습니다.');
+  }
+  wasm.setTableProperties(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, props);
+}
+
+function collectTopLevelTableTargets(): Array<{ secIdx: number; paraIdx: number; controlIdx: number }> {
+  const seen = new Set<string>();
+  const targets: Array<{ secIdx: number; paraIdx: number; controlIdx: number }> = [];
+
+  for (let pageIndex = 0; pageIndex < wasm.pageCount; pageIndex += 1) {
+    const layouts = wasm.getPageControlLayout(pageIndex)?.controls ?? [];
+    for (const item of layouts) {
+      if (item.type !== 'table' || item.secIdx === undefined || item.paraIdx === undefined || item.controlIdx === undefined) {
+        continue;
+      }
+      const key = `${item.secIdx}:${item.paraIdx}:${item.controlIdx}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      targets.push({
+        secIdx: item.secIdx,
+        paraIdx: item.paraIdx,
+        controlIdx: item.controlIdx,
+      });
+    }
+  }
+
+  return targets;
+}
+
+function getDocumentFontUsage(): any {
+  const fonts = new Set<string>();
+  const samples: Array<{ scope: string; fontFamily: string }> = [];
+  const info = wasm.getDocumentInfo();
+  const sectionCount = info.sectionCount ?? 1;
+
+  for (let sectionIndex = 0; sectionIndex < sectionCount; sectionIndex += 1) {
+    const paragraphCount = wasm.getParagraphCount(sectionIndex);
+    for (let paragraphIndex = 0; paragraphIndex < paragraphCount; paragraphIndex += 1) {
+      const length = wasm.getParagraphLength(sectionIndex, paragraphIndex);
+      if (length <= 0) continue;
+      const props = wasm.getCharPropertiesAt(sectionIndex, paragraphIndex, 0);
+      const fontFamily = props.fontFamily || props.fontFamilies?.find(Boolean);
+      if (!fontFamily) continue;
+      fonts.add(fontFamily);
+      if (samples.length < 20) {
+        samples.push({
+          scope: `body:${sectionIndex}:${paragraphIndex}`,
+          fontFamily,
+        });
+      }
+    }
+  }
+
+  for (const table of collectTopLevelTableTargets()) {
+    const dims = wasm.getTableDimensions(table.secIdx, table.paraIdx, table.controlIdx);
+    for (let cellIdx = 0; cellIdx < dims.cellCount; cellIdx += 1) {
+      const paraCount = wasm.getCellParagraphCount(table.secIdx, table.paraIdx, table.controlIdx, cellIdx);
+      for (let cellParaIdx = 0; cellParaIdx < paraCount; cellParaIdx += 1) {
+        const length = wasm.getCellParagraphLength(table.secIdx, table.paraIdx, table.controlIdx, cellIdx, cellParaIdx);
+        if (length <= 0) continue;
+        const props = wasm.getCellCharPropertiesAt(table.secIdx, table.paraIdx, table.controlIdx, cellIdx, cellParaIdx, 0);
+        const fontFamily = props.fontFamily || props.fontFamilies?.find(Boolean);
+        if (!fontFamily) continue;
+        fonts.add(fontFamily);
+        if (samples.length < 20) {
+          samples.push({
+            scope: `cell:${table.secIdx}:${table.paraIdx}:${table.controlIdx}:${cellIdx}:${cellParaIdx}`,
+            fontFamily,
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    fonts: Array.from(fonts),
+    samples,
+    availableFonts: Array.from(REGISTERED_FONTS).sort((left, right) => left.localeCompare(right)),
+    detectedOsFonts: Array.from(getDetectedOSFonts()).sort((left, right) => left.localeCompare(right)),
+  };
+}
+
+function collectTopLevelTableSnapshot(pageIndex: number): any[] {
+  const layouts = wasm.getPageControlLayout(pageIndex)?.controls ?? [];
+  const seen = new Set<string>();
+  const tables: any[] = [];
+
+  for (const item of layouts) {
+    if (item.type !== 'table' || item.secIdx === undefined || item.paraIdx === undefined || item.controlIdx === undefined) {
+      continue;
+    }
+    const secIdx = item.secIdx;
+    const paraIdx = item.paraIdx;
+    const controlIdx = item.controlIdx;
+    const key = `${item.secIdx}:${item.paraIdx}:${item.controlIdx}:${pageIndex}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const cellBboxes = wasm.getTableCellBboxes(secIdx, paraIdx, controlIdx, pageIndex)
+      .filter((cell) => cell.pageIndex === pageIndex);
+    const dims = wasm.getTableDimensions(secIdx, paraIdx, controlIdx);
+    const cells = cellBboxes.map((cell) => {
+      const paraCount = wasm.getCellParagraphCount(secIdx, paraIdx, controlIdx, cell.cellIdx);
+      const paragraphs: string[] = [];
+      for (let p = 0; p < paraCount; p += 1) {
+        const len = wasm.getCellParagraphLength(secIdx, paraIdx, controlIdx, cell.cellIdx, p);
+        paragraphs.push(wasm.getTextInCell(secIdx, paraIdx, controlIdx, cell.cellIdx, p, 0, len));
+      }
+      const info = wasm.getCellInfo(secIdx, paraIdx, controlIdx, cell.cellIdx);
+      const props = wasm.getCellProperties(secIdx, paraIdx, controlIdx, cell.cellIdx);
+      return {
+        cellIdx: cell.cellIdx,
+        row: info.row,
+        col: info.col,
+        rowSpan: info.rowSpan,
+        colSpan: info.colSpan,
+        bbox: { x: cell.x, y: cell.y, w: cell.w, h: cell.h },
+        text: paragraphs.join('\n').trim(),
+        paragraphs,
+        properties: props,
+      };
+    });
+
+    tables.push({
+      pageIndex,
+      secIdx,
+      paraIdx,
+      controlIdx,
+      bbox: { x: item.x, y: item.y, w: item.w, h: item.h },
+      dimensions: dims,
+      cells,
+    });
+  }
+
+  return tables;
+}
+
+async function getFormSnapshot(includeImages = true): Promise<any> {
+  const pages: any[] = [];
+  let renderedImageCount = 0;
+  const maxImagePages = 3;
+  for (let pageIndex = 0; pageIndex < wasm.pageCount; pageIndex += 1) {
+    const tables = collectTopLevelTableSnapshot(pageIndex);
+    const page: any = {
+      pageIndex,
+      tables,
+    };
+    const shouldRenderImage =
+      includeImages &&
+      renderedImageCount < maxImagePages &&
+      (pageIndex === 0 || tables.length > 0);
+
+    if (shouldRenderImage) {
+      const svg = wasm.renderPageSvg(pageIndex);
+      page.image = await svgToPngDataUrl(svg);
+      renderedImageCount += 1;
+    }
+    pages.push(page);
+  }
+
+  return {
+    documentInfo: wasm.getDocumentInfo(),
+    pages,
+    fields: wasm.getFieldList(),
+    bookmarks: wasm.getBookmarks(),
+  };
+}
+
+async function getDocumentStructure(includeImages = false): Promise<any> {
+  const info = wasm.getDocumentInfo();
+  const sectionCount = info.sectionCount ?? 1;
+  const sections: any[] = [];
+  const pages: any[] = Array.from({ length: wasm.pageCount }, (_, pageIndex) => ({
+    pageIndex,
+    textPreview: '',
+  }));
+
+  for (let sectionIndex = 0; sectionIndex < sectionCount; sectionIndex += 1) {
+    const paragraphCount = wasm.getParagraphCount(sectionIndex);
+    const paragraphs: any[] = [];
+
+    for (let paragraphIndex = 0; paragraphIndex < paragraphCount; paragraphIndex += 1) {
+      const length = wasm.getParagraphLength(sectionIndex, paragraphIndex);
+      const rawText = length > 0 ? wasm.getTextRange(sectionIndex, paragraphIndex, 0, length) : '';
+      const text = rawText.replace(/\s+/g, ' ').trim();
+      const page = wasm.getPageOfPosition(sectionIndex, paragraphIndex);
+      const pageIndex = page?.ok && typeof page.page === 'number' ? page.page : 0;
+      if (text) {
+        pages[pageIndex].textPreview = `${pages[pageIndex].textPreview} ${text}`.trim();
+      }
+      paragraphs.push({
+        sectionIndex,
+        paragraphIndex,
+        pageIndex,
+        text,
+        length,
+        isBlank: !text,
+      });
+    }
+
+    sections.push({
+      sectionIndex,
+      paragraphCount,
+      paragraphs,
+    });
+  }
+
+  const outlinedPages: any[] = pages.map((page) => ({
+    ...page,
+    textPreview: page.textPreview.trim(),
+  }));
+
+  if (includeImages) {
+    for (const page of outlinedPages.slice(0, 2)) {
+      const svg = wasm.renderPageSvg(page.pageIndex);
+      page.image = await svgToPngDataUrl(svg);
+    }
+  }
+
+  return {
+    documentInfo: info,
+    sections,
+    pages: outlinedPages,
+    fields: wasm.getFieldList(),
+    bookmarks: wasm.getBookmarks(),
+  };
+}
+
+function buildTableCellStartPosition(target: any): any {
+  return {
+    sectionIndex: target.secIdx,
+    paragraphIndex: 0,
+    charOffset: 0,
+    parentParaIndex: target.paraIdx,
+    controlIndex: target.controlIdx,
+    cellIndex: target.cellIdx,
+    cellParaIndex: 0,
+  };
+}
+
+function buildTableCellEndPosition(target: any): any {
+  const paraCount = wasm.getCellParagraphCount(target.secIdx, target.paraIdx, target.controlIdx, target.cellIdx);
+  const lastParaIndex = Math.max(0, paraCount - 1);
+  const lastLength = wasm.getCellParagraphLength(target.secIdx, target.paraIdx, target.controlIdx, target.cellIdx, lastParaIndex);
+  return {
+    sectionIndex: target.secIdx,
+    paragraphIndex: lastParaIndex,
+    charOffset: lastLength,
+    parentParaIndex: target.paraIdx,
+    controlIndex: target.controlIdx,
+    cellIndex: target.cellIdx,
+    cellParaIndex: lastParaIndex,
+  };
+}
+
+function selectTarget(target: any, mode: string = 'cursor'): boolean {
+  if (!inputHandler || !target || typeof target !== 'object') {
+    return false;
+  }
+
+  switch (target.kind) {
+    case 'paragraph':
+      if (mode === 'text') {
+        return inputHandler.selectParagraph(target.sectionIndex, target.paragraphIndex);
+      }
+      return inputHandler.moveCursorTo({
+        sectionIndex: target.sectionIndex,
+        paragraphIndex: target.paragraphIndex,
+        charOffset: 0,
+      });
+    case 'table':
+      return inputHandler.selectTableObject(target.secIdx, target.paraIdx, target.controlIdx);
+    case 'tableCell':
+      if (mode === 'cell') {
+        return inputHandler.selectTableCell(target.secIdx, target.paraIdx, target.controlIdx, target.cellIdx);
+      }
+      if (mode === 'text') {
+        return inputHandler.selectRange(
+          buildTableCellStartPosition(target),
+          buildTableCellEndPosition(target),
+        );
+      }
+      return inputHandler.moveCursorTo(buildTableCellStartPosition(target));
+    default:
+      return false;
+  }
+}
+
+function resolveCursorTarget(target: any, currentPos: any): any {
+  if (target && typeof target.sectionIndex === 'number' && typeof target.paragraphIndex === 'number') {
+    return {
+      sectionIndex: target.sectionIndex,
+      paragraphIndex: target.paragraphIndex,
+      charOffset: target.charOffset ?? 0,
+    };
+  }
+
+  if (target && typeof target.pageIndex === 'number') {
+    const pagePos = wasm.getPositionOfPage(target.pageIndex);
+    if (pagePos?.ok) {
+      return {
+        sectionIndex: pagePos.sec,
+        paragraphIndex: pagePos.para,
+        charOffset: pagePos.charOffset ?? 0,
+      };
+    }
+  }
+
+  if (target?.query) {
+    const result = wasm.searchText(
+      target.query,
+      currentPos?.sectionIndex ?? 0,
+      currentPos?.paragraphIndex ?? 0,
+      currentPos?.charOffset ?? 0,
+      true,
+      !!target.caseSensitive,
+    );
+    if (result?.found && typeof result.sec === 'number' && typeof result.para === 'number') {
+      return {
+        sectionIndex: result.sec,
+        paragraphIndex: result.para,
+        charOffset: result.charOffset ?? 0,
+      };
+    }
+  }
+
+  return currentPos;
+}
+
+function insertTextAtPosition(position: any, text: string): any {
+  const normalized = text.replace(/\r\n/g, '\n');
+  if (!position) {
+    throw new Error('삽입 위치가 비어 있습니다.');
+  }
+
+  if (position.parentParaIndex !== undefined) {
+    if (position.cellPath?.length) {
+      wasm.insertTextInCellByPath(position.sectionIndex, position.parentParaIndex, JSON.stringify(position.cellPath), position.charOffset, normalized);
+    } else {
+      wasm.insertTextInCell(
+        position.sectionIndex,
+        position.parentParaIndex,
+        position.controlIndex,
+        position.cellIndex,
+        position.cellParaIndex ?? 0,
+        position.charOffset,
+        normalized,
+      );
+    }
+  } else {
+    wasm.insertText(position.sectionIndex, position.paragraphIndex, position.charOffset, normalized);
+  }
+
+  return {
+    ...position,
+    charOffset: (position.charOffset ?? 0) + normalized.length,
+  };
+}
+
+function applyAiOperations(operations: any[]): any {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType: 'ai-batch',
+    operation: () => {
+      let workingCursor = inputHandler!.getCursorPosition();
+
+      for (const operation of operations ?? []) {
+        if (!operation || typeof operation !== 'object') continue;
+
+        switch (operation.type) {
+          case 'selectTarget':
+            selectTarget(operation.target, operation.mode ?? 'cursor');
+            workingCursor = inputHandler!.getCursorPosition();
+            break;
+          case 'moveCursor':
+            workingCursor = resolveCursorTarget(operation.target, workingCursor);
+            if (workingCursor) {
+              inputHandler!.moveCursorTo(workingCursor);
+              workingCursor = inputHandler!.getCursorPosition();
+            }
+            break;
+          case 'executeCommand':
+            dispatcher.dispatch(operation.commandId, operation.params ?? {});
+            workingCursor = inputHandler!.getCursorPosition();
+            break;
+          case 'applySelectionCharStyle':
+            applySelectionCharStyle(operation.props ?? {});
+            workingCursor = inputHandler!.getCursorPosition();
+            break;
+          case 'applySelectionParaStyle':
+            applySelectionParaStyle(operation.props ?? {});
+            workingCursor = inputHandler!.getCursorPosition();
+            break;
+          case 'setCurrentCellProperties':
+            setCurrentCellProperties(operation.props ?? {});
+            workingCursor = inputHandler!.getCursorPosition();
+            break;
+          case 'setCurrentTableProperties':
+            setCurrentTableProperties(operation.props ?? {});
+            workingCursor = inputHandler!.getCursorPosition();
+            break;
+          case 'replaceSelectionOrInsert':
+            if (inputHandler!.getSelection()) {
+              workingCursor = applyTextEditDirect(operation.text ?? '');
+            } else {
+              const basePosition = workingCursor ?? inputHandler!.getCursorPosition();
+              workingCursor = insertTextAtPosition(basePosition, operation.text ?? '');
+            }
+            break;
+          case 'insertAtCursor':
+            workingCursor = insertTextAtPosition(workingCursor, operation.text ?? '');
+            break;
+          case 'replaceParagraph':
+            replaceBodyParagraphText(operation.sectionIndex, operation.paragraphIndex, operation.text ?? '');
+            workingCursor = {
+              sectionIndex: operation.sectionIndex,
+              paragraphIndex: operation.paragraphIndex,
+              charOffset: (operation.text ?? '').length,
+            };
+            break;
+          case 'fillTargetValue':
+            fillFormValuesDirect([{ target: operation.target, value: operation.value ?? '' }]);
+            break;
+          case 'fillManyTargets':
+            fillFormValuesDirect(operation.entries ?? []);
+            break;
+          default:
+            console.warn('[applyAiOperations] unknown operation', operation);
+        }
+      }
+
+      return workingCursor;
+    },
+  });
+
+  return {
+    ok: true,
+    context: getSelectionContext(),
+  };
+}
+
+function executeEditorCommand(commandId: string, params?: Record<string, unknown>): any {
+  const ok = dispatcher.dispatch(commandId, params ?? {});
+  return {
+    ok,
+    context: getSelectionContext(),
+  };
+}
+
+function applySelectionCharStyleWithHistory(props: Record<string, unknown>): any {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType: 'ai-selection-char-style',
+    operation: () => {
+      applySelectionCharStyle(props);
+      return inputHandler!.getCursorPosition();
+    },
+  });
+  return {
+    ok: true,
+    context: getSelectionContext(),
+  };
+}
+
+function applySelectionParaStyleWithHistory(props: Record<string, unknown>): any {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType: 'ai-selection-para-style',
+    operation: () => {
+      applySelectionParaStyle(props);
+      return inputHandler!.getCursorPosition();
+    },
+  });
+  return {
+    ok: true,
+    context: getSelectionContext(),
+  };
+}
+
+function setCurrentCellPropertiesWithHistory(props: Record<string, unknown>): any {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType: 'ai-cell-properties',
+    operation: () => {
+      setCurrentCellProperties(props);
+      return inputHandler!.getCursorPosition();
+    },
+  });
+  return {
+    ok: true,
+    context: getSelectionContext(),
+  };
+}
+
+function setCurrentTablePropertiesWithHistory(props: Record<string, unknown>): any {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType: 'ai-table-properties',
+    operation: () => {
+      setCurrentTableProperties(props);
+      return inputHandler!.getCursorPosition();
+    },
+  });
+  return {
+    ok: true,
+    context: getSelectionContext(),
+  };
+}
+
+function fillFormValues(entries: Array<{ target: any; value: string }>, useHistory = true): any {
+  if (!useHistory || !inputHandler) {
+    fillFormValuesDirect(entries);
+    inputHandler?.triggerAfterEdit();
+    return { ok: true };
+  }
+
+  inputHandler.executeOperation({
+    kind: 'snapshot',
+    operationType: 'form-fill',
+    operation: () => {
+      fillFormValuesDirect(entries);
+      return inputHandler!.getCursorPosition();
+    },
+  });
+
+  return { ok: true };
+}
+
 initialize();
 
 // ── iframe 연동 API (postMessage) ──
@@ -623,14 +1703,101 @@ window.addEventListener('message', async (e) => {
         reply({ pageCount: docInfo.pageCount });
         break;
       }
+      case 'loadBlobUrl': {
+        const response = await fetch(params.url);
+        if (!response.ok) {
+          throw new Error(`Blob fetch failed: ${response.status}`);
+        }
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        const docInfo = wasm.loadDocument(bytes, params.fileName || 'document.hwp');
+        await initializeDocument(docInfo, `${params.fileName || 'document'} — ${docInfo.pageCount}페이지`);
+        reply({ pageCount: docInfo.pageCount });
+        break;
+      }
       case 'pageCount':
         reply(wasm.pageCount);
         break;
       case 'getPageSvg':
         reply(wasm.renderPageSvg(params.page ?? 0));
         break;
+      case 'getPagePng': {
+        const svg = wasm.renderPageSvg(params.page ?? 0);
+        reply(await svgToPngDataUrl(svg));
+        break;
+      }
+      case 'getDocumentInfo':
+        reply(wasm.getDocumentInfo());
+        break;
+      case 'getDocumentStructure':
+        reply(await getDocumentStructure(!!params.includeImages));
+        break;
+      case 'getSelectionContext':
+        reply(getSelectionContext());
+        break;
+      case 'getToolCatalog':
+        reply({
+          commands: getCommandCatalog(),
+          primitives: getPrimitiveToolCatalog(),
+        });
+        break;
+      case 'getDocumentFontUsage':
+        reply(getDocumentFontUsage());
+        break;
+      case 'getCursorPosition':
+        reply(inputHandler?.getCursorPosition() ?? null);
+        break;
+      case 'executeCommand':
+        reply(executeEditorCommand(params.commandId ?? '', params.params ?? {}));
+        break;
+      case 'selectTarget':
+        reply({
+          ok: selectTarget(params.target ?? {}, params.mode ?? 'cursor'),
+          context: getSelectionContext(),
+        });
+        break;
+      case 'applySelectionCharStyle':
+        reply(applySelectionCharStyleWithHistory(params.props ?? {}));
+        break;
+      case 'applySelectionParaStyle':
+        reply(applySelectionParaStyleWithHistory(params.props ?? {}));
+        break;
+      case 'setCurrentCellProperties':
+        reply(setCurrentCellPropertiesWithHistory(params.props ?? {}));
+        break;
+      case 'setCurrentTableProperties':
+        reply(setCurrentTablePropertiesWithHistory(params.props ?? {}));
+        break;
+      case 'moveCursor':
+        reply(inputHandler?.moveCursorTo(resolveCursorTarget(params.target ?? {}, inputHandler?.getCursorPosition())) ?? false);
+        break;
+      case 'applyTextEdit':
+        reply(applyTextEdit(params.text ?? ''));
+        break;
+      case 'applyAiOperations':
+        reply(applyAiOperations(params.operations ?? []));
+        break;
+      case 'getFormSnapshot':
+        reply(await getFormSnapshot(params.includeImages !== false));
+        break;
+      case 'searchText':
+        reply(wasm.searchText(params.query ?? '', 0, 0, 0, true, !!params.caseSensitive));
+        break;
+      case 'fillFormValues':
+        reply(fillFormValues(params.entries ?? [], params.useHistory !== false));
+        break;
+      case 'undo':
+        inputHandler?.performUndo();
+        reply({ ok: true, context: getSelectionContext() });
+        break;
+      case 'redo':
+        inputHandler?.performRedo();
+        reply({ ok: true, context: getSelectionContext() });
+        break;
+      case 'exportHwp':
+        reply(Array.from(wasm.exportHwp()));
+        break;
       case 'ready':
-        reply(true);
+        reply(appReady);
         break;
       default:
         reply(undefined, `Unknown method: ${method}`);

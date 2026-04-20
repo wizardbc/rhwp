@@ -133,6 +133,11 @@ export class WasmBridge {
     return this.doc.exportHwpx();
   }
 
+  getDocumentInfo(): DocumentInfo {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(this.doc.getDocumentInfo());
+  }
+
   getSourceFormat(): string {
     return this.doc?.getSourceFormat?.() ?? 'hwp';
   }
@@ -197,6 +202,11 @@ export class WasmBridge {
   renderPageSvg(pageNum: number): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.renderPageSvg(pageNum);
+  }
+
+  getPageTextLayout(pageNum: number): { runs?: unknown[]; [key: string]: unknown } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).getPageTextLayout(pageNum));
   }
 
   getCursorRect(sec: number, para: number, charOffset: number): CursorRect {
