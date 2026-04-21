@@ -1045,6 +1045,29 @@ impl DocumentCore {
 
         // ── 커서 위치를 pre-built tree에서 직접 찾는 헬퍼 ──
         struct CursorHit { page: u32, x: f64, y: f64, h: f64 }
+        #[derive(Clone)]
+        struct ActualRun {
+            page: u32,
+            x: f64,
+            y: f64,
+            h: f64,
+            char_start: usize,
+            char_end: usize,
+            char_positions: Vec<f64>,
+            column_left: f64,
+            column_right: f64,
+        }
+        #[derive(Clone)]
+        struct ActualLine {
+            page: u32,
+            y: f64,
+            h: f64,
+            char_start: usize,
+            char_end: usize,
+            runs: Vec<ActualRun>,
+            column_left: f64,
+            column_right: f64,
+        }
 
         fn find_body_cursor(
             node: &RenderNode, sec: usize, para: usize,
@@ -1108,6 +1131,178 @@ impl DocumentCore {
                     return Some(hit);
                 }
             }
+            None
+        }
+
+        fn collect_body_runs<F: Fn(u32, f64) -> (f64, f64)>(
+            node: &RenderNode,
+            sec: usize,
+            para: usize,
+            page: u32,
+            find_column_area: &F,
+            out: &mut Vec<ActualRun>,
+        ) {
+            if let RenderNodeType::TextRun(ref tr) = node.node_type {
+                if tr.section_index == Some(sec)
+                    && tr.para_index == Some(para)
+                    && tr.cell_context.is_none()
+                {
+                    if let Some(cs) = tr.char_start {
+                        let positions = compute_char_positions(&tr.text, &tr.style);
+                        let char_end = cs + tr.text.chars().count();
+                        let (column_left, column_right) =
+                            find_column_area(page, node.bbox.x + node.bbox.width / 2.0);
+                        out.push(ActualRun {
+                            page,
+                            x: node.bbox.x,
+                            y: node.bbox.y,
+                            h: node.bbox.height,
+                            char_start: cs,
+                            char_end,
+                            char_positions: positions,
+                            column_left,
+                            column_right,
+                        });
+                    }
+                }
+            }
+            for child in &node.children {
+                collect_body_runs(child, sec, para, page, find_column_area, out);
+            }
+        }
+
+        fn collect_cell_runs(
+            node: &RenderNode,
+            ppi: usize,
+            ci: usize,
+            cei: usize,
+            cpi: usize,
+            page: u32,
+            out: &mut Vec<ActualRun>,
+        ) {
+            if let RenderNodeType::TextRun(ref tr) = node.node_type {
+                let matches_cell = tr.cell_context.as_ref().map_or(false, |ctx| {
+                    ctx.parent_para_index == ppi
+                        && ctx.path[0].control_index == ci
+                        && ctx.path[0].cell_index == cei
+                        && ctx.path[0].cell_para_index == cpi
+                });
+                if matches_cell {
+                    if let Some(cs) = tr.char_start {
+                        let positions = compute_char_positions(&tr.text, &tr.style);
+                        let char_end = cs + tr.text.chars().count();
+                        out.push(ActualRun {
+                            page,
+                            x: node.bbox.x,
+                            y: node.bbox.y,
+                            h: node.bbox.height,
+                            char_start: cs,
+                            char_end,
+                            char_positions: positions,
+                            column_left: 0.0,
+                            column_right: 0.0,
+                        });
+                    }
+                }
+            }
+            for child in &node.children {
+                collect_cell_runs(child, ppi, ci, cei, cpi, page, out);
+            }
+        }
+
+        fn build_actual_lines(mut runs: Vec<ActualRun>, is_body: bool) -> Vec<ActualLine> {
+            use std::cmp::Ordering;
+
+            runs.sort_by(|a, b| {
+                a.page.cmp(&b.page)
+                    .then_with(|| a.column_left.partial_cmp(&b.column_left).unwrap_or(Ordering::Equal))
+                    .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(Ordering::Equal))
+                    .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(Ordering::Equal))
+                    .then_with(|| a.char_start.cmp(&b.char_start))
+            });
+
+            let mut lines: Vec<ActualLine> = Vec::new();
+            const Y_TOLERANCE: f64 = 0.75;
+
+            for run in runs {
+                let same_line = lines.last().map_or(false, |last| {
+                    let same_column = !is_body || (
+                        (last.column_left - run.column_left).abs() <= 1.0
+                            && (last.column_right - run.column_right).abs() <= 1.0
+                    );
+                    last.page == run.page
+                        && same_column
+                        && (last.y - run.y).abs() <= Y_TOLERANCE
+                });
+
+                if same_line {
+                    let line = lines.last_mut().unwrap();
+                    line.y = line.y.min(run.y);
+                    line.h = line.h.max(run.h);
+                    line.char_start = line.char_start.min(run.char_start);
+                    line.char_end = line.char_end.max(run.char_end);
+                    line.runs.push(run);
+                } else {
+                    lines.push(ActualLine {
+                        page: run.page,
+                        y: run.y,
+                        h: run.h,
+                        char_start: run.char_start,
+                        char_end: run.char_end,
+                        runs: vec![run.clone()],
+                        column_left: run.column_left,
+                        column_right: run.column_right,
+                    });
+                }
+            }
+
+            for line in &mut lines {
+                line.runs.sort_by(|a, b| {
+                    a.char_start.cmp(&b.char_start)
+                        .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(Ordering::Equal))
+                });
+                if let Some(first) = line.runs.first() {
+                    line.column_left = first.column_left;
+                    line.column_right = first.column_right;
+                }
+            }
+
+            lines
+        }
+
+        fn line_text_left(line: &ActualLine) -> Option<f64> {
+            line.runs.iter()
+                .map(|run| run.x)
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        }
+
+        fn line_text_right(line: &ActualLine) -> Option<f64> {
+            line.runs.iter()
+                .map(|run| run.x + run.char_positions.last().copied().unwrap_or(0.0))
+                .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        }
+
+        fn find_actual_x(line: &ActualLine, offset: usize) -> Option<f64> {
+            if offset < line.char_start || offset > line.char_end {
+                return None;
+            }
+
+            for run in &line.runs {
+                if offset >= run.char_start && offset <= run.char_end {
+                    let local_offset = offset - run.char_start;
+                    let xr = if local_offset < run.char_positions.len() {
+                        run.char_positions[local_offset]
+                    } else {
+                        run.char_positions.last().copied().unwrap_or(0.0)
+                    };
+                    return Some(run.x + xr);
+                }
+            }
+
+            if offset == line.char_end {
+                return line_text_right(line);
+            }
+
             None
         }
 
@@ -1198,8 +1393,6 @@ impl DocumentCore {
             };
 
             let char_count = navigable_text_len(para);
-            let line_count = Self::build_line_char_starts(para).len().max(1);
-
             let sel_start = if para_idx == start_para_idx { start_char_offset } else { 0 };
             let sel_end = if para_idx == end_para_idx { end_char_offset } else { char_count };
             if sel_start >= sel_end { continue; }
@@ -1215,6 +1408,74 @@ impl DocumentCore {
                 }
             }
 
+            let mut actual_runs = Vec::new();
+            for (pn, tree) in tree_cache.iter() {
+                if let Some((ppi, ci, cei)) = cell_ctx {
+                    collect_cell_runs(&tree.root, ppi, ci, cei, para_idx, *pn, &mut actual_runs);
+                } else {
+                    collect_body_runs(&tree.root, section_idx, para_idx, *pn, &find_column_area, &mut actual_runs);
+                }
+            }
+
+            let actual_lines = build_actual_lines(actual_runs, cell_ctx.is_none());
+            if !actual_lines.is_empty() {
+                for (line_idx, line) in actual_lines.iter().enumerate() {
+                    let line_char_start = line.char_start;
+                    let line_char_end = line.char_end;
+                    let range_start = sel_start.max(line_char_start);
+                    let range_end = sel_end.min(line_char_end);
+                    if range_start >= range_end { continue; }
+
+                    let left_x = find_actual_x(line, range_start)
+                        .or_else(|| if range_start == line_char_start { line_text_left(line) } else { None });
+                    let right_x = find_actual_x(line, range_end)
+                        .or_else(|| if range_end >= line_char_end { line_text_right(line) } else { None })
+                        .or_else(|| if range_end > range_start {
+                            find_actual_x(line, range_end - 1)
+                        } else {
+                            None
+                        });
+
+                    if let (Some(lx), Some(rx)) = (left_x, right_x) {
+                        let partial_start = range_start > line_char_start;
+                        let selection_continues = cell_ctx.is_none() && (
+                            (range_end < sel_end) ||
+                            (para_idx < end_para_idx && range_end == sel_end) ||
+                            (range_end == sel_end && range_end >= line_char_end && line_idx + 1 < actual_lines.len())
+                        );
+
+                        let (area_left, area_right) = if cell_ctx.is_none() {
+                            (line.column_left, line.column_right)
+                        } else {
+                            (0.0, 0.0)
+                        };
+
+                        let (page_idx, rect_x, rect_y, rect_h) = if !partial_start && cell_ctx.is_none() {
+                            (line.page, area_left, line.y, line.h)
+                        } else {
+                            (line.page, lx, line.y, line.h)
+                        };
+
+                        let width = if selection_continues {
+                            (area_right - rect_x).max(0.0)
+                        } else if !partial_start && cell_ctx.is_none() {
+                            (rx - rect_x).max(0.0)
+                        } else {
+                            (rx - lx).abs()
+                        };
+
+                        if width > 0.01 {
+                            rects.push(format!(
+                                "{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"width\":{:.1},\"height\":{:.1}}}",
+                                page_idx, rect_x, rect_y, width, rect_h
+                            ));
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let line_count = Self::build_line_char_starts(para).len().max(1);
             for line_idx in 0..line_count {
                 let (line_char_start, line_char_end) = Self::get_line_char_range(para, line_idx);
                 let range_start = sel_start.max(line_char_start);
@@ -1222,17 +1483,14 @@ impl DocumentCore {
                 if range_start >= range_end { continue; }
 
                 let left_hit = find_cursor!(para_idx, range_start);
-                // range_end가 줄바꿈 등 비렌더링 문자 위치이면 한 칸 앞으로 재시도
                 let right_hit = find_cursor!(para_idx, range_end)
                     .or_else(|| if range_end > range_start { find_cursor!(para_idx, range_end - 1) } else { None });
 
                 if let (Some(lh), Some(rh)) = (left_hit, right_hit) {
                     let partial_start = range_start > line_char_start;
-
                     let selection_continues = cell_ctx.is_none() && (
                         (range_end < sel_end) ||
                         (para_idx < end_para_idx && range_end == sel_end) ||
-                        // 같은 문단 내 강제 줄바꿈: 줄 끝까지 선택되고 다음 줄 시작이 sel_end이면 확장
                         (range_end == sel_end && range_end >= line_char_end && line_idx + 1 < line_count)
                     );
 
@@ -1242,7 +1500,6 @@ impl DocumentCore {
                         (0.0, 0.0)
                     };
 
-                    // y/h는 항상 left_hit 기준 (right_hit가 다음 줄에 있을 수 있음)
                     let (page_idx, rect_x, rect_y, rect_h) = if !partial_start && cell_ctx.is_none() {
                         (lh.page, area_left, lh.y, lh.h)
                     } else {
