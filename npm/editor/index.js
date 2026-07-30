@@ -37,6 +37,10 @@ export async function createEditor(container, options = {}) {
   }
 
   const studioUrl = options.studioUrl || DEFAULT_STUDIO_URL;
+  const studioOrigin = new URL(studioUrl).origin;
+  if (studioOrigin === 'null') {
+    throw new Error('rhwp Studio URL은 HTTP(S) origin이어야 합니다.');
+  }
 
   // iframe 생성
   const iframe = document.createElement('iframe');
@@ -53,7 +57,7 @@ export async function createEditor(container, options = {}) {
   });
 
   // WASM 초기화 대기 (ready 메서드로 확인)
-  const editor = new RhwpEditor(iframe);
+  const editor = new RhwpEditor(iframe, studioOrigin);
   await editor._waitReady();
   return editor;
 }
@@ -63,13 +67,15 @@ export async function createEditor(container, options = {}) {
  *
  * iframe 내부의 rhwp-studio와 postMessage로 통신합니다.
  */
-class RhwpEditor {
-  constructor(iframe) {
+export class RhwpEditor {
+  constructor(iframe, targetOrigin) {
     this._iframe = iframe;
+    this._targetOrigin = targetOrigin;
     this._pending = new Map();
 
     // 응답 수신 리스너
-    window.addEventListener('message', (e) => {
+    this._onMessage = (e) => {
+      if (e.source !== this._iframe.contentWindow || e.origin !== this._targetOrigin) return;
       if (e.data?.type === 'rhwp-response' && e.data.id != null) {
         const resolver = this._pending.get(e.data.id);
         if (resolver) {
@@ -81,7 +87,8 @@ class RhwpEditor {
           }
         }
       }
-    });
+    };
+    window.addEventListener('message', this._onMessage);
   }
 
   /**
@@ -94,7 +101,7 @@ class RhwpEditor {
       this._pending.set(id, { resolve, reject });
       this._iframe.contentWindow.postMessage(
         { type: 'rhwp-request', id, method, params },
-        '*'
+        this._targetOrigin
       );
       // 10초 타임아웃
       setTimeout(() => {
@@ -157,6 +164,32 @@ class RhwpEditor {
     return this._request('getPageSvg', { page });
   }
 
+  /** 현재 선택영역의 텍스트·문서 앵커·revision을 반환합니다. */
+  async getSelection() {
+    return this._request('getSelection');
+  }
+
+  /**
+   * 동일한 문서 revision과 선택 앵커가 유지될 때만 선택 텍스트를 교체합니다.
+   * AI 수정은 사용자 확인을 받은 뒤 이 메서드로 적용하세요.
+   */
+  async replaceSelection(text, expectedRevision, expectedSelection) {
+    return this._request('replaceSelection', { text, expectedRevision, expectedSelection });
+  }
+
+  /** 현재 문서를 HWPX 바이트로 내보냅니다. */
+  async exportHwpx() {
+    return new Uint8Array(await this._request('exportHwpx'));
+  }
+
+  async undo() {
+    return this._request('undo');
+  }
+
+  async redo() {
+    return this._request('redo');
+  }
+
   /**
    * iframe 엘리먼트를 반환합니다.
    */
@@ -168,6 +201,7 @@ class RhwpEditor {
    * 에디터를 제거합니다.
    */
   destroy() {
+    window.removeEventListener('message', this._onMessage);
     this._iframe.remove();
     this._pending.clear();
   }

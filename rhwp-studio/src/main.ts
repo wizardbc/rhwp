@@ -39,6 +39,13 @@ let inputHandler: InputHandler | null = null;
 let toolbar: Toolbar | null = null;
 let ruler: Ruler | null = null;
 let appReady = false;
+let documentRevision = 0;
+
+// 외부 AI/채팅 bridge가 오래된 선택영역을 덮어쓰지 않도록 모든 문서 변경을
+// 단조 증가 revision으로 추적한다. 선택 이동·스크롤은 문서 변경이 아니므로 제외된다.
+eventBus.on('document-changed', () => {
+  documentRevision += 1;
+});
 
 function notifyParentDocumentLoaded(fileName: string, docInfo: DocumentInfo): void {
   if (window.parent === window) return;
@@ -539,6 +546,7 @@ function setupEventListeners(): void {
 async function initializeDocument(docInfo: DocumentInfo, displayName: string): Promise<void> {
   const msg = sbMessage();
   try {
+    documentRevision += 1;
     console.log('[initDoc] 1. 폰트 로딩 시작');
     if (docInfo.fontsUsed?.length) {
       await loadWebFonts(docInfo.fontsUsed, (loaded, total) => {
@@ -830,7 +838,18 @@ function getSelectionContext(): any {
     }
   }
 
+  // Capability detection runs before a file is opened as well.  The wasm
+  // binding may reject document-info access then, but selection-v1 is still
+  // available and needs to be reported to the embedding application.
+  let documentInfo = null;
+  try {
+    documentInfo = wasm.getDocumentInfo();
+  } catch (_error) {
+    // No document is currently loaded.
+  }
+
   return {
+    documentRevision,
     hasSelection: !!selection,
     selection,
     cursor,
@@ -849,7 +868,7 @@ function getSelectionContext(): any {
     cellSelection: selectedCellRange ?? null,
     selectedHtml,
     selectedText,
-    documentInfo: wasm.getDocumentInfo(),
+    documentInfo,
   };
 }
 
@@ -1138,6 +1157,47 @@ function applyTextEdit(text: string): any {
     },
   });
   return getSelectionContext();
+}
+
+function sameSelectionAnchor(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * Chat host가 승인한 텍스트 변경만 적용한다. 사용자가 그 사이 문서를 수정하거나
+ * 다른 영역을 선택했다면 변경하지 않고 STALE_SELECTION 오류를 반환한다.
+ */
+function replaceSelectionWithGuard(params: {
+  text?: unknown;
+  expectedRevision?: unknown;
+  expectedSelection?: unknown;
+}): any {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  if (typeof params.text !== 'string') throw new Error('교체할 텍스트가 필요합니다.');
+  if (!Number.isSafeInteger(params.expectedRevision) || params.expectedRevision !== documentRevision) {
+    throw new Error('STALE_SELECTION: 문서가 변경되었습니다. 선택 영역을 다시 읽어주세요.');
+  }
+
+  const actualSelection = inputHandler.getSelection();
+  if (!actualSelection) {
+    throw new Error('STALE_SELECTION: 현재 선택 영역이 없습니다.');
+  }
+  const expected = params.expectedSelection as { start?: unknown; end?: unknown } | undefined;
+  if (!expected?.start || !expected?.end
+    || !sameSelectionAnchor(expected.start, actualSelection.start)
+    || !sameSelectionAnchor(expected.end, actualSelection.end)) {
+    throw new Error('STALE_SELECTION: 선택 영역이 변경되었습니다.');
+  }
+
+  const revisionBeforeEdit = documentRevision;
+  const context = applyTextEdit(params.text);
+  // 일부 구형 edit 경로는 document-changed를 내보내지 않는다. 그 경우에도
+  // stale guard를 유지하기 위해 정확히 한 번 revision을 증가시킨다.
+  if (documentRevision === revisionBeforeEdit) documentRevision += 1;
+  return {
+    ...context,
+    documentRevision,
+  };
 }
 
 function replaceTopLevelCellText(target: any, text: string): void {
@@ -1885,6 +1945,9 @@ window.addEventListener('message', async (e) => {
       case 'getSelectionContext':
         reply(getSelectionContext());
         break;
+      case 'getSelection':
+        reply(getSelectionContext());
+        break;
       case 'getEditorModeSnapshot':
         reply(getEditorModeSnapshot());
         break;
@@ -1929,6 +1992,9 @@ window.addEventListener('message', async (e) => {
         break;
       case 'applyTextEdit':
         reply(applyTextEdit(params.text ?? ''));
+        break;
+      case 'replaceSelection':
+        reply(replaceSelectionWithGuard(params ?? {}));
         break;
       case 'applyAiOperations':
         reply(applyAiOperations(params.operations ?? []));
