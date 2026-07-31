@@ -95,21 +95,22 @@ export class RhwpEditor {
    * iframe에 요청을 보내고 응답을 기다립니다.
    * @internal
    */
-  _request(method, params = {}) {
+  _request(method, params = {}, timeoutMs = 10000, transfer = []) {
     return new Promise((resolve, reject) => {
       const id = ++requestId;
       this._pending.set(id, { resolve, reject });
       this._iframe.contentWindow.postMessage(
         { type: 'rhwp-request', id, method, params },
-        this._targetOrigin
+        this._targetOrigin,
+        transfer,
       );
-      // 10초 타임아웃
+      // 문서 변환·렌더링 요청에는 더 긴 제한 시간을 전달할 수 있다.
       setTimeout(() => {
         if (this._pending.has(id)) {
           this._pending.delete(id);
           reject(new Error(`Request timeout: ${method}`));
         }
-      }, 10000);
+      }, timeoutMs);
     });
   }
 
@@ -142,9 +143,18 @@ export class RhwpEditor {
    * console.log(`${result.pageCount}페이지`);
    * ```
    */
-  async loadFile(data, fileName = 'document.hwp') {
-    const bytes = data instanceof ArrayBuffer ? Array.from(new Uint8Array(data)) : Array.from(data);
-    return this._request('loadFile', { data: bytes, fileName });
+  async loadFile(data, fileName = 'document.hwp', options = {}) {
+    // 대용량 HWP를 number[]로 바꾸면 116MB 원본이 수 GB의 JS 객체로 팽창한다.
+    // ArrayBuffer를 iframe으로 transfer하면 복사·직렬화 없이 원본 바이트를 전달한다.
+    const bytes = data instanceof ArrayBuffer
+      ? data
+      : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+    return this._request(
+      'loadFile',
+      { data: bytes, fileName, validationChoice: options.validationChoice },
+      120000,
+      [bytes],
+    );
   }
 
   /**
@@ -175,6 +185,11 @@ export class RhwpEditor {
    */
   async selectTarget(target, mode = 'text') {
     return this._request('selectTarget', { target, mode });
+  }
+
+  /** 문서 선택을 바꾸지 않고, 원문 인용 위치의 bounding box를 표시한다. */
+  async highlightTarget(target) {
+    return this._request('highlightTarget', { target });
   }
 
   /**

@@ -19,7 +19,7 @@ import { pageCommands } from '@/command/commands/page';
 import { toolCommands } from '@/command/commands/tool';
 import { ContextMenu } from '@/ui/context-menu';
 import { CommandPalette } from '@/ui/command-palette';
-import { showValidationModalIfNeeded } from '@/ui/validation-modal';
+import { showValidationModalIfNeeded, type ValidationChoice } from '@/ui/validation-modal';
 import { showToast } from '@/ui/toast';
 import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
 import { TableObjectRenderer } from '@/engine/table-object-renderer';
@@ -543,7 +543,16 @@ function setupEventListeners(): void {
 }
 
 /** 문서 초기화 공통 시퀀스 (loadFile, createNewDocument 양쪽에서 사용) */
-async function initializeDocument(docInfo: DocumentInfo, displayName: string): Promise<void> {
+type DocumentInitializationOptions = {
+  /** Citation viewers must never modify the original merely to render it. */
+  validationChoice?: 'prompt' | 'as-is';
+};
+
+async function initializeDocument(
+  docInfo: DocumentInfo,
+  displayName: string,
+  options: DocumentInitializationOptions = {},
+): Promise<void> {
   const msg = sbMessage();
   try {
     documentRevision += 1;
@@ -574,7 +583,9 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
       const report = wasm.getValidationWarnings();
       console.log(`[validation] ${report.count} warnings`, report.summary);
       if (report.count > 0) {
-        const choice = await showValidationModalIfNeeded(report);
+        const choice: ValidationChoice = options.validationChoice === 'as-is'
+          ? 'as-is'
+          : await showValidationModalIfNeeded(report);
         console.log(`[validation] user choice: ${choice}`);
         if (choice === 'auto-fix') {
           const n = wasm.reflowLinesegs();
@@ -1626,6 +1637,14 @@ function selectTarget(target: any, mode: string = 'cursor'): boolean {
   }
 }
 
+/** Citation navigation uses a persistent render overlay, not editor selection. */
+function highlightTarget(target: any): boolean {
+  if (!inputHandler || !target || typeof target !== 'object') return false;
+  if (target.kind !== 'paragraph') return false;
+  if (typeof target.sectionIndex !== 'number' || typeof target.paragraphIndex !== 'number') return false;
+  return inputHandler.highlightParagraphBounds(target.sectionIndex, target.paragraphIndex);
+}
+
 function resolveCursorTarget(target: any, currentPos: any): any {
   if (target && typeof target.sectionIndex === 'number' && typeof target.paragraphIndex === 'number') {
     return {
@@ -1907,7 +1926,11 @@ window.addEventListener('message', async (e) => {
       case 'loadFile': {
         const bytes = new Uint8Array(params.data);
         const docInfo = wasm.loadDocument(bytes, params.fileName || 'document.hwp');
-        await initializeDocument(docInfo, `${params.fileName || 'document'} — ${docInfo.pageCount}페이지`);
+        await initializeDocument(
+          docInfo,
+          `${params.fileName || 'document'} — ${docInfo.pageCount}페이지`,
+          { validationChoice: params.validationChoice === 'as-is' ? 'as-is' : 'prompt' },
+        );
         reply({ pageCount: docInfo.pageCount });
         break;
       }
@@ -1972,6 +1995,12 @@ window.addEventListener('message', async (e) => {
       case 'selectTarget':
         reply({
           ok: selectTarget(params.target ?? {}, params.mode ?? 'cursor'),
+          context: getSelectionContext(),
+        });
+        break;
+      case 'highlightTarget':
+        reply({
+          ok: highlightTarget(params.target ?? {}),
           context: getSelectionContext(),
         });
         break;

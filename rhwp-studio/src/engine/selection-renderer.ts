@@ -9,6 +9,7 @@ export class SelectionRenderer {
   constructor(
     private container: HTMLElement,
     private virtualScroll: VirtualScroll,
+    private readonly highlightClass = 'selection-highlight',
   ) {
     this.layer = document.createElement('div');
     this.layer.className = 'selection-layer';
@@ -26,7 +27,7 @@ export class SelectionRenderer {
 
     for (const rect of rects) {
       const div = document.createElement('div');
-      div.className = 'selection-highlight';
+      div.className = this.highlightClass;
       const pageOffset = this.virtualScroll.getPageOffset(rect.pageIndex);
       const pageLeft = this.calcPageLeft(rect.pageIndex);
       const snapped = this.snapRect(
@@ -36,8 +37,11 @@ export class SelectionRenderer {
         rect.height * zoom,
       );
 
+      const appearance = this.highlightClass === 'citation-highlight'
+        ? 'background:rgba(37,99,235,0.06);outline:2px solid rgba(37,99,235,0.92);outline-offset:-1px;border-radius:2px;box-sizing:border-box;'
+        : 'background:rgba(51,144,255,0.35);';
       div.style.cssText =
-        `position:absolute;background:rgba(51,144,255,0.35);pointer-events:none;` +
+        `position:absolute;pointer-events:none;${appearance}` +
         `left:${snapped.left}px;` +
         `top:${snapped.top}px;` +
         `width:${snapped.width}px;` +

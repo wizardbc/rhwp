@@ -37,7 +37,11 @@ export interface SelectionContext {
 
 export declare class RhwpEditor {
   /** HWP 파일을 로드합니다 */
-  loadFile(data: ArrayBuffer | Uint8Array, fileName?: string): Promise<LoadResult>;
+  loadFile(
+    data: ArrayBuffer | Uint8Array,
+    fileName?: string,
+    options?: { validationChoice?: 'prompt' | 'as-is' },
+  ): Promise<LoadResult>;
   /** 현재 문서의 페이지 수를 반환합니다 */
   pageCount(): Promise<number>;
   /** 특정 페이지를 SVG 문자열로 렌더링합니다 */
@@ -48,6 +52,10 @@ export declare class RhwpEditor {
   selectTarget(
     target: { kind: 'paragraph'; sectionIndex: number; paragraphIndex: number },
     mode?: 'cursor' | 'text',
+  ): Promise<{ ok: boolean; context: SelectionContext }>;
+  /** 문서 선택을 바꾸지 않고, 원문 인용 위치의 bounding box를 표시합니다. */
+  highlightTarget(
+    target: { kind: 'paragraph'; sectionIndex: number; paragraphIndex: number },
   ): Promise<{ ok: boolean; context: SelectionContext }>;
   /** revision과 앵커가 일치할 때만 선택영역을 교체합니다. */
   replaceSelection(

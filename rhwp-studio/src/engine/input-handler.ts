@@ -9,7 +9,7 @@ import { DeleteSelectionCommand, ApplyCharFormatCommand, SnapshotCommand } from 
 import type { OperationDescriptor } from './command';
 import { VirtualScroll } from '@/view/virtual-scroll';
 import { ViewportManager } from '@/view/viewport-manager';
-import type { DocumentPosition, CharProperties, ParaProperties, CursorRect, FormObjectHitResult } from '@/core/types';
+import type { DocumentPosition, CharProperties, ParaProperties, CursorRect, FormObjectHitResult, SelectionRect } from '@/core/types';
 import type { CommandDispatcher } from '@/command/dispatcher';
 import { matchShortcut, defaultShortcuts } from '@/command/shortcut-map';
 import type { ContextMenu, ContextMenuItem } from '@/ui/context-menu';
@@ -30,6 +30,7 @@ export class InputHandler {
   private caret: CaretRenderer;
   private fieldMarker: FieldMarkerRenderer;
   private selectionRenderer: SelectionRenderer;
+  private citationRenderer: SelectionRenderer;
   private history: CommandHistory;
   private textarea: HTMLTextAreaElement;
   private active = false;
@@ -212,6 +213,7 @@ export class InputHandler {
     this.caret = new CaretRenderer(container, virtualScroll);
     this.fieldMarker = new FieldMarkerRenderer(container, virtualScroll);
     this.selectionRenderer = new SelectionRenderer(container, virtualScroll);
+    this.citationRenderer = new SelectionRenderer(container, virtualScroll, 'citation-highlight');
     this.history = new CommandHistory();
 
     // Hidden input 요소 생성
@@ -1789,6 +1791,7 @@ export class InputHandler {
     this.caret.dispose();
     this.fieldMarker.dispose();
     this.selectionRenderer.dispose();
+    this.citationRenderer.dispose();
     this.cellSelectionRenderer?.dispose();
     this.tableObjectRenderer?.dispose();
     this.tableResizeRenderer?.dispose();
@@ -1983,6 +1986,36 @@ export class InputHandler {
       { sectionIndex, paragraphIndex, charOffset: 0 },
       { sectionIndex, paragraphIndex, charOffset: Math.max(0, length) },
     );
+  }
+
+  /**
+   * 원문 인용 위치를 선택 상태로 바꾸지 않고 렌더링 bounding box로만 표시한다.
+   * 사용자 선택·캐럿·문서 revision을 건드리지 않으므로 읽기 전용 원문 검토에 쓴다.
+   */
+  highlightParagraphBounds(sectionIndex: number, paragraphIndex: number): boolean {
+    this.citationRenderer.clear();
+    try {
+      const length = this.wasm.getParagraphLength(sectionIndex, paragraphIndex);
+      const rects = this.wasm.getSelectionRects(sectionIndex, paragraphIndex, 0, paragraphIndex, Math.max(0, length));
+      if (!rects.length) return false;
+      const zoom = this.viewportManager.getZoom();
+      this.citationRenderer.render(rects, zoom);
+      this.scrollCitationIntoView(rects[0], zoom);
+      return true;
+    } catch (error) {
+      console.warn('[InputHandler] citation bounding box 생성 실패:', error);
+      return false;
+    }
+  }
+
+  clearCitationHighlight(): void {
+    this.citationRenderer.clear();
+  }
+
+  private scrollCitationIntoView(rect: SelectionRect, zoom: number): void {
+    const targetY = this.virtualScroll.getPageOffset(rect.pageIndex) + rect.y * zoom;
+    const margin = Math.max(24, this.container.clientHeight * 0.2);
+    this.container.scrollTop = Math.max(0, targetY - margin);
   }
 
   /** 표 객체를 선택 상태로 만든다. */
