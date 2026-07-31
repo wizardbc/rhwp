@@ -170,6 +170,14 @@ export class RhwpEditor {
   }
 
   /**
+   * 문서의 특정 구조 위치로 이동하거나 해당 문단을 선택한다.
+   * 이 동작은 문서 내용을 변경하지 않으며, 원문 인용 위치 강조에 사용한다.
+   */
+  async selectTarget(target, mode = 'text') {
+    return this._request('selectTarget', { target, mode });
+  }
+
+  /**
    * 동일한 문서 revision과 선택 앵커가 유지될 때만 선택 텍스트를 교체합니다.
    * AI 수정은 사용자 확인을 받은 뒤 이 메서드로 적용하세요.
    */

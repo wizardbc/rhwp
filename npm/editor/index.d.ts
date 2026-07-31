@@ -44,6 +44,11 @@ export declare class RhwpEditor {
   getPageSvg(page?: number): Promise<string>;
   /** 현재 선택영역의 텍스트, 위치 앵커, 문서 revision을 반환합니다. */
   getSelection(): Promise<SelectionContext>;
+  /** 문서의 특정 구조 위치로 이동하거나 해당 문단을 선택합니다. */
+  selectTarget(
+    target: { kind: 'paragraph'; sectionIndex: number; paragraphIndex: number },
+    mode?: 'cursor' | 'text',
+  ): Promise<{ ok: boolean; context: SelectionContext }>;
   /** revision과 앵커가 일치할 때만 선택영역을 교체합니다. */
   replaceSelection(
     text: string,
