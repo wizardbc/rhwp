@@ -2017,8 +2017,9 @@ export class InputHandler {
       const rects = this.wasm.getSelectionRects(sectionIndex, paragraphIndex, 0, paragraphIndex, Math.max(0, length));
       if (!rects.length) return false;
       const zoom = this.viewportManager.getZoom();
-      this.citationRenderer.render(rects, zoom);
-      this.scrollCitationIntoView(rects[0], zoom);
+      const bounds = this.mergeCitationBounds(rects);
+      this.citationRenderer.render(bounds, zoom);
+      this.scrollCitationIntoView(bounds[0], zoom);
       return true;
     } catch (error) {
       console.warn('[InputHandler] citation bounding box 생성 실패:', error);
@@ -2028,6 +2029,25 @@ export class InputHandler {
 
   clearCitationHighlight(): void {
     this.citationRenderer.clear();
+  }
+
+  /** 줄·문자 조각이 아닌, 인용 문단의 연속 영역을 감싸는 box를 만든다. */
+  private mergeCitationBounds(rects: SelectionRect[]): SelectionRect[] {
+    const pages = new Map<number, SelectionRect>();
+    for (const rect of rects) {
+      const current = pages.get(rect.pageIndex);
+      if (!current) {
+        pages.set(rect.pageIndex, { ...rect });
+        continue;
+      }
+      const right = Math.max(current.x + current.width, rect.x + rect.width);
+      const bottom = Math.max(current.y + current.height, rect.y + rect.height);
+      current.x = Math.min(current.x, rect.x);
+      current.y = Math.min(current.y, rect.y);
+      current.width = right - current.x;
+      current.height = bottom - current.y;
+    }
+    return [...pages.values()].sort((left, right) => left.pageIndex - right.pageIndex);
   }
 
   private scrollCitationIntoView(rect: SelectionRect, zoom: number): void {
