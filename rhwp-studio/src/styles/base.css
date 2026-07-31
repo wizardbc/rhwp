@@ -107,8 +107,6 @@ body {
 /* BIM 원문 뷰어: 편집 도구는 감추고 선택·복사만 허용한다. */
 .rhwp-read-only #menu-bar,
 .rhwp-read-only #icon-toolbar,
-.rhwp-read-only #style-bar,
-.rhwp-read-only #h-ruler,
-.rhwp-read-only #v-ruler {
+.rhwp-read-only #style-bar {
   display: none !important;
 }
