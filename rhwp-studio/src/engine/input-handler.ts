@@ -34,6 +34,8 @@ export class InputHandler {
   private history: CommandHistory;
   private textarea: HTMLTextAreaElement;
   private active = false;
+  /** 원문 검토 모드에서는 선택·복사만 허용하고 문서 변경을 막는다. */
+  private readOnly = false;
   private insertMode = true;  // true=삽입, false=수정(덮어쓰기)
   /** 마지막 셀 키 (눈금자 셀 bbox 중복 조회 방지) */
   private lastCellKey: string | null = null;
@@ -349,6 +351,7 @@ export class InputHandler {
 
     // Toolbar에서 서식 적용 요청 수신 (글꼴명, 크기, 색상 — 커맨드 시스템 미경유)
     eventBus.on('format-char', (props) => {
+      if (this.readOnly) return;
       if (!this.active) return;
       if (this.cursor.hasSelection()) {
         this.applyCharFormat(props as Partial<CharProperties>);
@@ -1032,6 +1035,12 @@ export class InputHandler {
 
   /** 특수 키 처리 (Backspace, Enter, 화살표, Ctrl+Z/Y) */
   private onKeyDown(e: KeyboardEvent): void {
+    if (this.readOnly) {
+      const key = e.key.toLowerCase();
+      const isCopyOrSelectAll = (e.ctrlKey || e.metaKey) && (key === 'c' || key === 'a');
+      const isNavigation = ['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'home', 'end', 'pageup', 'pagedown', 'shift'].includes(key);
+      if (!isCopyOrSelectAll && !isNavigation) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+    }
     _keyboard.onKeyDown.call(this, e);
   }
 
@@ -1054,11 +1063,13 @@ export class InputHandler {
 
   /** 잘라내기 이벤트 처리 */
   private onCut(e: ClipboardEvent): void {
+    if (this.readOnly) { e.preventDefault(); return; }
     _keyboard.onCut.call(this, e);
   }
 
   /** 붙여넣기 이벤트 처리 */
   private onPaste(e: ClipboardEvent): void {
+    if (this.readOnly) { e.preventDefault(); return; }
     _keyboard.onPaste.call(this, e);
   }
 
@@ -1256,6 +1267,7 @@ export class InputHandler {
    * 라우터가 적절한 Undo 전략을 자동 선택한다.
    */
   executeOperation(desc: OperationDescriptor): void {
+    if (this.readOnly) return;
     switch (desc.kind) {
       case 'command': {
         const newPos = this.history.execute(desc.command, this.wasm);
@@ -1295,11 +1307,13 @@ export class InputHandler {
 
   /** IME 조합 시작 */
   private onCompositionStart(): void {
+    if (this.readOnly) return;
     _text.onCompositionStart.call(this);
   }
 
   /** IME 조합 완료 — 조합 텍스트를 Command로 기록 */
   private onCompositionEnd(): void {
+    if (this.readOnly) return;
     _text.onCompositionEnd.call(this);
   }
 
@@ -1310,6 +1324,7 @@ export class InputHandler {
 
   /** 텍스트 입력 처리 (textarea input 이벤트) */
   private onInput(e?: Event): void {
+    if (this.readOnly) { this.textarea.value = ''; return; }
     _text.onInput.call(this, e as InputEvent);
   }
 
@@ -1802,6 +1817,9 @@ export class InputHandler {
 
   /** 커맨드 디스패처를 주입한다 (main.ts에서 호출) */
   setDispatcher(d: CommandDispatcher): void { this.dispatcher = d; }
+
+  /** 원문 검토 모드 설정. 선택·복사는 유지하지만 문서 변경은 차단한다. */
+  setReadOnly(value: boolean): void { this.readOnly = value; }
 
   /** 편집 영역이 활성 상태인지 (문서 로드 + 편집 영역 포커스) */
   isActive(): boolean { return this.active; }

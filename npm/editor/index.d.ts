@@ -40,7 +40,7 @@ export declare class RhwpEditor {
   loadFile(
     data: ArrayBuffer | Uint8Array,
     fileName?: string,
-    options?: { validationChoice?: 'prompt' | 'as-is' },
+    options?: { validationChoice?: 'prompt' | 'as-is'; readOnly?: boolean },
   ): Promise<LoadResult>;
   /** 현재 문서의 페이지 수를 반환합니다 */
   pageCount(): Promise<number>;

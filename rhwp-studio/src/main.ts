@@ -546,6 +546,8 @@ function setupEventListeners(): void {
 type DocumentInitializationOptions = {
   /** Citation viewers must never modify the original merely to render it. */
   validationChoice?: 'prompt' | 'as-is';
+  /** Source viewers permit selection and copy, but never document edits. */
+  readOnly?: boolean;
 };
 
 async function initializeDocument(
@@ -570,10 +572,13 @@ async function initializeDocument(
     inputHandler?.deactivate();
     console.log('[initDoc] 4. canvasView loadDocument');
     canvasView?.loadDocument();
+    const readOnly = Boolean(options.readOnly);
+    document.documentElement.classList.toggle('rhwp-read-only', readOnly);
+    inputHandler?.setReadOnly(readOnly);
     console.log('[initDoc] 5. toolbar setEnabled');
-    toolbar?.setEnabled(true);
+    toolbar?.setEnabled(!readOnly);
     console.log('[initDoc] 6. toolbar initStyleDropdown');
-    toolbar?.initStyleDropdown();
+    if (!readOnly) toolbar?.initStyleDropdown();
     console.log('[initDoc] 7. inputHandler activateWithCaretPosition');
     inputHandler?.activateWithCaretPosition();
     console.log('[initDoc] 8. 완료');
@@ -1929,7 +1934,10 @@ window.addEventListener('message', async (e) => {
         await initializeDocument(
           docInfo,
           `${params.fileName || 'document'} — ${docInfo.pageCount}페이지`,
-          { validationChoice: params.validationChoice === 'as-is' ? 'as-is' : 'prompt' },
+          {
+            validationChoice: params.validationChoice === 'as-is' ? 'as-is' : 'prompt',
+            readOnly: Boolean(params.readOnly),
+          },
         );
         reply({ pageCount: docInfo.pageCount });
         break;

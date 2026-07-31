@@ -151,7 +151,7 @@ export class RhwpEditor {
       : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
     return this._request(
       'loadFile',
-      { data: bytes, fileName, validationChoice: options.validationChoice },
+      { data: bytes, fileName, validationChoice: options.validationChoice, readOnly: Boolean(options.readOnly) },
       120000,
       [bytes],
     );
