@@ -55,7 +55,7 @@ export declare class RhwpEditor {
   ): Promise<{ ok: boolean; context: SelectionContext }>;
   /** 문서 선택을 바꾸지 않고, 원문 인용 위치의 bounding box를 표시합니다. */
   highlightTarget(
-    target: { kind: 'paragraph'; sectionIndex: number; paragraphIndex: number },
+    target: { kind: 'paragraph' | 'table'; sectionIndex: number; paragraphIndex: number },
   ): Promise<{ ok: boolean; context: SelectionContext }>;
   /** revision과 앵커가 일치할 때만 선택영역을 교체합니다. */
   replaceSelection(

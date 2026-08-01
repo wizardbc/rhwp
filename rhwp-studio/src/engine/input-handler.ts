@@ -2027,6 +2027,41 @@ export class InputHandler {
     }
   }
 
+  /**
+   * 표 자체를 선택하지 않고, 인용된 표 영역의 bounding box만 표시한다.
+   * 표는 부모 문단의 텍스트 selection rect를 만들 수 없으므로 렌더 레이아웃의
+   * table control과 bbox를 사용한다. 읽기 전용 원문 검토에서만 사용한다.
+   */
+  highlightTableBounds(sectionIndex: number, paragraphIndex: number): boolean {
+    this.citationRenderer.clear();
+    try {
+      const seen = new Set<string>();
+      const bounds: SelectionRect[] = [];
+      for (let pageIndex = 0; pageIndex < this.wasm.pageCount; pageIndex += 1) {
+        const controls = this.wasm.getPageControlLayout(pageIndex)?.controls ?? [];
+        for (const control of controls) {
+          if (control.type !== 'table' || control.secIdx !== sectionIndex || control.paraIdx !== paragraphIndex || control.controlIdx === undefined) continue;
+          const key = `${control.secIdx}:${control.paraIdx}:${control.controlIdx}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const box = this.wasm.getTableBBox(sectionIndex, paragraphIndex, control.controlIdx);
+          if (Number.isFinite(box.x) && Number.isFinite(box.y) && Number.isFinite(box.width) && Number.isFinite(box.height)) {
+            bounds.push({ pageIndex: box.pageIndex, x: box.x, y: box.y, width: box.width, height: box.height });
+          }
+        }
+      }
+      if (!bounds.length) return false;
+      const zoom = this.viewportManager.getZoom();
+      const merged = this.mergeCitationBounds(bounds);
+      this.citationRenderer.render(merged, zoom);
+      this.scrollCitationIntoView(merged[0], zoom);
+      return true;
+    } catch (error) {
+      console.warn('[InputHandler] table citation bounding box 생성 실패:', error);
+      return false;
+    }
+  }
+
   clearCitationHighlight(): void {
     this.citationRenderer.clear();
   }

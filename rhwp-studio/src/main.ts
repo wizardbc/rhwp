@@ -1645,9 +1645,10 @@ function selectTarget(target: any, mode: string = 'cursor'): boolean {
 /** Citation navigation uses a persistent render overlay, not editor selection. */
 function highlightTarget(target: any): boolean {
   if (!inputHandler || !target || typeof target !== 'object') return false;
-  if (target.kind !== 'paragraph') return false;
   if (typeof target.sectionIndex !== 'number' || typeof target.paragraphIndex !== 'number') return false;
-  return inputHandler.highlightParagraphBounds(target.sectionIndex, target.paragraphIndex);
+  if (target.kind === 'paragraph') return inputHandler.highlightParagraphBounds(target.sectionIndex, target.paragraphIndex);
+  if (target.kind === 'table') return inputHandler.highlightTableBounds(target.sectionIndex, target.paragraphIndex);
+  return false;
 }
 
 function resolveCursorTarget(target: any, currentPos: any): any {
