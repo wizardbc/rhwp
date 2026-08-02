@@ -28,7 +28,7 @@ use std::io::Write;
 
 use quick_xml::Writer;
 
-use crate::model::shape::{CommonObjAttr, TextWrap, VertAlign, VertRelTo, HorzAlign, HorzRelTo};
+use crate::model::shape::{CommonObjAttr, HorzAlign, HorzRelTo, TextWrap, VertAlign, VertRelTo};
 use crate::model::table::{Cell, Table, TablePageBreak, VerticalAlign};
 
 use super::context::SerializeContext;
@@ -93,11 +93,7 @@ pub fn write_table<W: Write>(
     // tr[]: 행 단위 반복. 각 행에 속한 셀 (cell.row == r) 을 col 오름차순으로 출력.
     for row_idx in 0..table.row_count {
         start_tag(w, "hp:tr")?;
-        let mut row_cells: Vec<&Cell> = table
-            .cells
-            .iter()
-            .filter(|c| c.row == row_idx)
-            .collect();
+        let mut row_cells: Vec<&Cell> = table.cells.iter().filter(|c| c.row == row_idx).collect();
         row_cells.sort_by_key(|c| c.col);
         for cell in row_cells {
             write_cell(w, cell, ctx)?;
@@ -227,7 +223,14 @@ fn write_sub_list<W: Write>(
         "hp:subList",
         &[
             ("id", ""),
-            ("textDirection", if cell.text_direction == 1 { "VERTICAL" } else { "HORIZONTAL" }),
+            (
+                "textDirection",
+                if cell.text_direction == 1 {
+                    "VERTICAL"
+                } else {
+                    "HORIZONTAL"
+                },
+            ),
             ("lineWrap", "BREAK"),
             ("vertAlign", cell_vert_align_str(cell.vertical_align)),
             ("linkListIDRef", "0"),
@@ -243,7 +246,13 @@ fn write_sub_list<W: Write>(
     for (pi, para) in cell.paragraphs.iter().enumerate() {
         ctx.para_shape_ids.reference(para.para_shape_id);
         ctx.style_ids.reference(para.style_id as u16);
-        if let Some(cs_ref) = para.char_shapes.first() {
+        if let Some(cs_ref) = para
+            .char_shapes
+            .iter()
+            .rev()
+            .find(|item| item.start_pos == 0)
+            .or_else(|| para.char_shapes.first())
+        {
             ctx.char_shape_ids.reference(cs_ref.char_shape_id);
         }
 
@@ -263,7 +272,14 @@ fn write_sub_list<W: Write>(
             ],
         )?;
 
-        let cs = para.char_shapes.first().map(|r| r.char_shape_id).unwrap_or(0);
+        let cs = para
+            .char_shapes
+            .iter()
+            .rev()
+            .find(|item| item.start_pos == 0)
+            .or_else(|| para.char_shapes.first())
+            .map(|r| r.char_shape_id)
+            .unwrap_or(0);
         let cs_str = cs.to_string();
         start_tag_attrs(w, "hp:run", &[("charPrIDRef", &cs_str)])?;
         // 텍스트만 출력 (탭·소프트브레이크는 Stage 3 범위에서 제외 — section.rs 와 동일 방식으로 단순화)
@@ -297,7 +313,7 @@ fn write_sub_list<W: Write>(
 }
 
 fn write_cell_text<W: Write>(w: &mut Writer<W>, text: &str) -> Result<(), SerializeError> {
-    use quick_xml::events::{BytesStart, BytesEnd, BytesText, Event};
+    use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
     // <hp:t>text</hp:t>
     w.write_event(Event::Start(BytesStart::new("hp:t")))
         .map_err(|e| SerializeError::XmlError(e.to_string()))?;
@@ -343,7 +359,11 @@ fn write_cell_margin<W: Write>(w: &mut Writer<W>, cell: &Cell) -> Result<(), Ser
 // ---------- enum 변환 헬퍼 ----------
 
 fn bool01(b: bool) -> &'static str {
-    if b { "1" } else { "0" }
+    if b {
+        "1"
+    } else {
+        "0"
+    }
 }
 
 fn text_wrap_str(w: TextWrap) -> &'static str {
@@ -479,7 +499,9 @@ mod tests {
         let cc = xml.find("colCnt=").unwrap();
         let bf = xml.find("borderFillIDRef=").unwrap();
         let na = xml.find("noAdjust=").unwrap();
-        assert!(ip < zp && zp < nt && nt < tw && tw < tf && tf < rc && rc < cc && cc < bf && bf < na);
+        assert!(
+            ip < zp && zp < nt && nt < tw && tw < tf && tf < rc && rc < cc && cc < bf && bf < na
+        );
     }
 
     #[test]
@@ -537,5 +559,24 @@ mod tests {
         write_table(&mut w, &t, &mut ctx).unwrap();
         // 99 는 등록되지 않은 borderFill → unresolved
         assert!(ctx.border_fill_ids.unresolved().contains(&99u16));
+    }
+
+    #[test]
+    fn cell_run_uses_latest_char_shape_starting_at_zero() {
+        use crate::model::paragraph::CharShapeRef;
+
+        let mut table = empty_table(1, 1);
+        table.cells[0].paragraphs[0].char_shapes = vec![
+            CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 0,
+            },
+            CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 7,
+            },
+        ];
+        let xml = serialize(&table);
+        assert!(xml.contains("<hp:run charPrIDRef=\"7\">"));
     }
 }

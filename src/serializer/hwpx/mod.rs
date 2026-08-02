@@ -160,7 +160,8 @@ mod tests {
     #[test]
     fn serialize_with_one_section_parses_back() {
         let mut doc = Document::default();
-        doc.sections.push(crate::model::document::Section::default());
+        doc.sections
+            .push(crate::model::document::Section::default());
         let bytes = serialize_hwpx(&doc).expect("serialize one-section");
         let parsed = parse_hwpx(&bytes).expect("parse back");
         assert_eq!(parsed.sections.len(), 1);
@@ -200,6 +201,60 @@ mod tests {
     }
 
     #[test]
+    fn serialize_table_control_roundtrip() {
+        use crate::model::control::Control;
+        use crate::model::paragraph::Paragraph;
+        use crate::model::style::{CharShape, ParaShape, Style};
+        use crate::model::table::{Cell, Table};
+
+        let mut doc = Document::default();
+        doc.doc_info.char_shapes.push(CharShape::default());
+        doc.doc_info.para_shapes.push(ParaShape::default());
+        doc.doc_info.styles.push(Style::default());
+
+        let mut table = Table::default();
+        table.row_count = 1;
+        table.col_count = 2;
+        table.common.width = 20_000;
+        table.common.height = 2_000;
+        for (column, text) in ["항목", "내용"].iter().enumerate() {
+            let mut cell = Cell::default();
+            cell.row = 0;
+            cell.col = column as u16;
+            cell.width = 10_000;
+            cell.height = 2_000;
+            let mut cell_para = Paragraph::default();
+            cell_para.text = (*text).to_string();
+            cell.paragraphs.push(cell_para);
+            table.cells.push(cell);
+        }
+        table.rebuild_grid();
+
+        let mut paragraph = Paragraph::default();
+        paragraph.controls.push(Control::Table(Box::new(table)));
+        let mut section = crate::model::document::Section::default();
+        section.paragraphs.push(paragraph);
+        doc.sections.push(section);
+
+        let bytes = serialize_hwpx(&doc).expect("serialize table");
+        let cursor = std::io::Cursor::new(&bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("zip");
+        let mut section_xml = archive.by_name("Contents/section0.xml").expect("section0");
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut section_xml, &mut xml).expect("read section");
+        assert!(xml.contains("<hp:tbl "));
+        assert_eq!(xml.matches("<hp:tc ").count(), 2);
+        drop(section_xml);
+        drop(archive);
+
+        let parsed = parse_hwpx(&bytes).expect("parse table roundtrip");
+        assert!(parsed.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .any(|control| matches!(control, Control::Table(table) if table.cells.len() == 2)));
+    }
+
+    #[test]
     fn tab_and_linebreak_emitted_inline() {
         let mut doc = Document::default();
         let mut section = crate::model::document::Section::default();
@@ -216,8 +271,11 @@ mod tests {
         std::io::Read::read_to_string(&mut sec0, &mut xml).expect("read");
         // Stage 2.3 (ref_mixed 기반): 혼합 콘텐츠 + tab 속성 포함
         assert!(
-            xml.contains(r#"<hp:t>A<hp:tab width="4000" leader="0" type="1"/>B<hp:lineBreak/>C</hp:t>"#),
-            "mixed content not rendered: {}", xml
+            xml.contains(
+                r#"<hp:t>A<hp:tab width="4000" leader="0" type="1"/>B<hp:lineBreak/>C</hp:t>"#
+            ),
+            "mixed content not rendered: {}",
+            xml
         );
     }
 
@@ -307,7 +365,8 @@ mod tests {
     #[test]
     fn hancom_required_files_present() {
         let mut doc = Document::default();
-        doc.sections.push(crate::model::document::Section::default());
+        doc.sections
+            .push(crate::model::document::Section::default());
         let bytes = serialize_hwpx(&doc).expect("serialize");
         // ZIP 파일 목록에 한컴 필수 11개가 모두 있는지 확인
         let cursor = std::io::Cursor::new(&bytes);
@@ -327,11 +386,7 @@ mod tests {
             "META-INF/manifest.xml",
         ];
         for r in &required {
-            assert!(
-                names.iter().any(|n| n == r),
-                "missing required file: {}",
-                r
-            );
+            assert!(names.iter().any(|n| n == r), "missing required file: {}", r);
         }
     }
 }

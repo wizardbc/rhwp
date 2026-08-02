@@ -18,7 +18,28 @@ export interface LoadResult {
 export type EditorOperation =
   | { type: 'insertAtCursor'; text: string }
   | { type: 'replaceSelectionOrInsert'; text: string }
-  | { type: 'selectTarget'; target: { kind: 'paragraph'; sectionIndex: number; paragraphIndex: number }; mode?: 'cursor' | 'text' };
+  | { type: 'selectTarget'; target: { kind: 'paragraph'; sectionIndex: number; paragraphIndex: number }; mode?: 'cursor' | 'text' }
+  | {
+      /** HTML의 문단·글자·표 서식을 실제 HWPX 구조로 가져옵니다. */
+      type: 'importStyledHtml';
+      html: string;
+      /** 이 텍스트와 정확히 일치하는 문단 뒤에서 강제 쪽 나누기를 합니다. */
+      pageBreakAfterText?: string;
+      /** 가져온 뒤 텍스트가 일치하는 문단에 한글 문단 속성을 적용합니다. */
+      paragraphStyles?: Array<{
+        text: string;
+        match?: 'exact' | 'prefix';
+        props: Record<string, unknown>;
+      }>;
+      /** marker 문단을 실제 HWP 표로 교체합니다. */
+      tables?: Array<{
+        marker: string;
+        columns: string[];
+        rows: Array<Record<string, string>>;
+        headerRows?: number;
+        labelColumn?: boolean;
+      }>;
+    };
 
 export interface DocumentPosition {
   sectionIndex: number;

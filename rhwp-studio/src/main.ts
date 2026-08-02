@@ -1724,6 +1724,173 @@ function insertTextAtPosition(position: any, text: string): any {
   };
 }
 
+function findBodyParagraph(text: string, match: 'exact' | 'prefix' = 'exact'): number {
+  const paragraphCount = wasm.getParagraphCount(0);
+  for (let paragraphIndex = 0; paragraphIndex < paragraphCount; paragraphIndex += 1) {
+    const length = wasm.getParagraphLength(0, paragraphIndex);
+    if (length <= 0) continue;
+    const paragraphText = wasm.getTextRange(0, paragraphIndex, 0, length).trim();
+    if ((match === 'exact' && paragraphText === text) || (match === 'prefix' && paragraphText.startsWith(text))) {
+      return paragraphIndex;
+    }
+  }
+  return -1;
+}
+
+function wrapTableCellText(value: string, limit: number): string[] {
+  const result: string[] = [];
+  for (const sourceLine of value.split('\n')) {
+    let remaining = sourceLine.trim();
+    if (!remaining) {
+      result.push(' ');
+      continue;
+    }
+    while (Array.from(remaining).length > limit) {
+      const characters = Array.from(remaining);
+      const candidate = characters.slice(0, limit + 1).join('');
+      const spaceIndex = candidate.lastIndexOf(' ');
+      const cut = spaceIndex >= Math.floor(limit * 0.55) ? Array.from(candidate.slice(0, spaceIndex)).length : limit;
+      result.push(characters.slice(0, cut).join('').trimEnd());
+      remaining = characters.slice(cut).join('').trimStart();
+    }
+    result.push(remaining || ' ');
+  }
+  return result;
+}
+
+/**
+ * 생성형 도구가 준비한 제한된 HTML을 HWPX의 문단/글자/표 구조로 가져온다.
+ * 문자열 삽입과 달리 표와 서식이 문서 모델에 남아 한컴오피스에서도 편집된다.
+ */
+function importStyledHtml(operation: any, position: any): any {
+  if (!position || position.parentParaIndex !== undefined) {
+    throw new Error('서식 문서는 본문 문단 위치에서만 만들 수 있습니다.');
+  }
+  if (typeof operation.html !== 'string' || !operation.html.trim()) {
+    throw new Error('가져올 서식 HTML이 비어 있습니다.');
+  }
+  if (operation.html.length > 2_000_000) {
+    throw new Error('가져올 서식 HTML이 너무 큽니다.');
+  }
+
+  // 한국어 문서의 기본 글꼴을 DocInfo에 먼저 등록해야 HTML importer가
+  // font-family를 실제 HWP CharShape으로 연결할 수 있다.
+  let stage = '글꼴 등록';
+  try {
+    wasm.findOrCreateFontId('함초롬돋움');
+    stage = 'HTML 문서 구조 변환';
+    const imported = JSON.parse(wasm.pasteHtml(
+      position.sectionIndex,
+      position.paragraphIndex,
+      position.charOffset,
+      operation.html,
+    ));
+    if (!imported.ok) throw new Error(imported.error ?? '서식 문서를 가져오지 못했습니다.');
+
+    stage = '표지 쪽 나누기';
+    if (typeof operation.pageBreakAfterText === 'string' && operation.pageBreakAfterText.trim()) {
+      const paragraphIndex = findBodyParagraph(operation.pageBreakAfterText.trim());
+      if (paragraphIndex >= 0) {
+        const length = wasm.getParagraphLength(0, paragraphIndex);
+        wasm.insertPageBreak(0, paragraphIndex, length);
+      }
+    }
+
+    stage = '한글 표 생성';
+    const border = { type: 1, width: 1, color: '#8fa4ac' };
+    for (const tableSpec of operation.tables ?? []) {
+      if (!tableSpec || typeof tableSpec.marker !== 'string' || !Array.isArray(tableSpec.columns) || !tableSpec.columns.length) continue;
+      const markerIndex = findBodyParagraph(tableSpec.marker.trim());
+      if (markerIndex < 0) throw new Error(`표 위치를 찾지 못했습니다: ${tableSpec.marker}`);
+      const markerLength = wasm.getParagraphLength(0, markerIndex);
+      if (markerLength > 0) wasm.deleteText(0, markerIndex, 0, markerLength);
+      const headerRows = Number.isInteger(tableSpec.headerRows) ? Math.max(0, tableSpec.headerRows) : 1;
+      const rows = Array.isArray(tableSpec.rows) ? tableSpec.rows : [];
+      const rowCount = rows.length + headerRows;
+      const created = wasm.createTable(0, markerIndex, 0, Math.max(1, rowCount), tableSpec.columns.length);
+      if (!created.ok) throw new Error(`표를 만들지 못했습니다: ${tableSpec.marker}`);
+      const tableRows: Array<Record<string, string>> = headerRows > 0
+        ? [Object.fromEntries(tableSpec.columns.map((column: string) => [column, column])), ...rows]
+        : rows;
+      const columnCount = tableSpec.columns.length;
+      tableRows.forEach((row, rowIndex) => {
+        const charactersPerLine = Math.max(8, Math.floor(58 / columnCount));
+        const wrappedCells = tableSpec.columns.map((column: string) => wrapTableCellText(
+          typeof row?.[column] === 'string' && row[column].trim() ? row[column].trim() : ' ',
+          charactersPerLine,
+        ));
+        const rowLines = Math.max(1, ...wrappedCells.map((lines: string[]) => lines.length));
+        const rowHeight = Math.min(12000, Math.max(rowIndex < headerRows ? 1900 : 2200, rowLines * 1050 + 700));
+        tableSpec.columns.forEach((column: string, columnIndex: number) => {
+        const cellIndex = rowIndex * columnCount + columnIndex;
+        const lines = wrappedCells[columnIndex];
+        const text = lines.join('');
+        replaceTopLevelCellText({ secIdx: 0, paraIdx: created.paraIdx, controlIdx: created.controlIdx, cellIdx: cellIndex }, text);
+        const splitOffsets: number[] = [];
+        let runningOffset = 0;
+        lines.slice(0, -1).forEach((line: string) => {
+          runningOffset += Array.from(line).length;
+          splitOffsets.push(runningOffset);
+        });
+        [...splitOffsets].reverse().forEach((offset: number) => {
+          wasm.splitParagraphInCell(0, created.paraIdx, created.controlIdx, cellIndex, 0, offset);
+        });
+        const emphasized = rowIndex < headerRows || (tableSpec.labelColumn && columnIndex === 0);
+        const baseCellProps: Record<string, unknown> = {
+          height: rowHeight,
+          paddingLeft: 420, paddingRight: 420, paddingTop: 260, paddingBottom: 260,
+          verticalAlign: 1,
+        };
+        if (tableSpec.labelColumn && columnCount === 2) {
+          baseCellProps.width = columnIndex === 0 ? 11000 : 31500;
+        }
+        if (emphasized) {
+          wasm.setCellProperties(0, created.paraIdx, created.controlIdx, cellIndex, {
+            ...baseCellProps, isHeader: rowIndex < headerRows,
+            borderLeft: border, borderRight: border, borderTop: border, borderBottom: border,
+            fillType: 'solid', fillColor: '#e7eff1', patternColor: '#000000', patternType: 0,
+          });
+        } else {
+          wasm.setCellProperties(0, created.paraIdx, created.controlIdx, cellIndex, baseCellProps);
+        }
+        lines.forEach((line: string, lineIndex: number) => {
+          const lineLength = Array.from(line).length;
+          if (lineLength > 0) {
+            wasm.applyCharFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, 0, lineLength, JSON.stringify({
+              bold: emphasized, fontSize: emphasized ? 880 : 850, textColor: emphasized ? '#173f4b' : '#1f292d',
+            }));
+          }
+          wasm.applyParaFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, JSON.stringify({
+            alignment: emphasized ? 'center' : 'left', lineSpacing: 135,
+          }));
+        });
+        });
+      });
+      wasm.setTableProperties(0, created.paraIdx, created.controlIdx, {
+        pageBreak: 1, repeatHeader: headerRows > 0, cellSpacing: 0,
+        paddingLeft: 160, paddingRight: 160, paddingTop: 100, paddingBottom: 100,
+      });
+    }
+
+    stage = '한글 문단 서식 적용';
+    for (const style of operation.paragraphStyles ?? []) {
+      if (!style || typeof style.text !== 'string' || !style.props) continue;
+      const paragraphIndex = findBodyParagraph(style.text.trim(), style.match === 'prefix' ? 'prefix' : 'exact');
+      if (paragraphIndex >= 0) {
+        wasm.applyParaFormat(0, paragraphIndex, JSON.stringify(style.props));
+      }
+    }
+  } catch (error) {
+    throw new Error(`${stage} 실패: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return {
+    sectionIndex: 0,
+    paragraphIndex: 0,
+    charOffset: 0,
+  };
+}
+
 function applyAiOperations(operations: any[]): any {
   if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
 
@@ -1778,6 +1945,10 @@ function applyAiOperations(operations: any[]): any {
             break;
           case 'insertAtCursor':
             workingCursor = insertTextAtPosition(workingCursor, operation.text ?? '');
+            break;
+          case 'importStyledHtml':
+            workingCursor = importStyledHtml(operation, workingCursor ?? inputHandler!.getCursorPosition());
+            inputHandler!.moveCursorTo(workingCursor);
             break;
           case 'replaceParagraph':
             replaceBodyParagraphText(operation.sectionIndex, operation.paragraphIndex, operation.text ?? '');

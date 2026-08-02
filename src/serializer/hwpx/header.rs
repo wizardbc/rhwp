@@ -49,9 +49,15 @@ pub fn write_header(doc: &Document, ctx: &SerializeContext) -> Result<Vec<u8>, S
             ("xmlns:dc", "http://purl.org/dc/elements/1.1/"),
             ("xmlns:opf", "http://www.idpf.org/2007/opf/"),
             ("xmlns:epub", "http://www.idpf.org/2007/ops"),
-            ("xmlns:ooxmlchart", "http://www.hancom.co.kr/hwpml/2016/ooxmlchart"),
+            (
+                "xmlns:ooxmlchart",
+                "http://www.hancom.co.kr/hwpml/2016/ooxmlchart",
+            ),
             ("xmlns:hpf", "http://www.hancom.co.kr/schema/2011/hpf"),
-            ("xmlns:config", "urn:oasis:names:tc:opendocument:xmlns:config:1.0"),
+            (
+                "xmlns:config",
+                "urn:oasis:names:tc:opendocument:xmlns:config:1.0",
+            ),
             ("version", "1.2"),
             ("secCnt", &sec_cnt),
         ],
@@ -117,7 +123,10 @@ fn write_fontfaces<W: Write>(w: &mut Writer<W>, doc_info: &DocInfo) -> Result<()
     start_tag_attrs(
         w,
         "hh:fontfaces",
-        &[("itemCnt", &groups.iter().filter(|g| !g.is_empty()).count().to_string())],
+        &[(
+            "itemCnt",
+            &groups.iter().filter(|g| !g.is_empty()).count().to_string(),
+        )],
     )?;
     for (lang_idx, fonts) in groups.iter().enumerate() {
         if fonts.is_empty() {
@@ -211,11 +220,24 @@ fn write_border_fill<W: Write>(
     write_border_line(w, "hh:bottomBorder", &bf.borders[3])?;
     write_diagonal(w, &bf.diagonal)?;
 
-    // fillBrush: Fill이 존재할 때만
+    // fillBrush: 단색 채우기는 실제 winBrush 색까지 기록해야 저장 후에도
+    // 표 머리글과 문단 배경이 유지된다.
     if !matches!(bf.fill.fill_type, FillType::None) {
         start_tag(w, "hc:fillBrush")?;
-        // Stage 1에서는 Fill 내부를 완전 직렬화하지 않고 빈 래퍼만 출력.
-        // (한컴 관찰: ref_empty의 borderFill id=2 에 빈 fillBrush 존재)
+        if let Some(solid) = &bf.fill.solid {
+            let face_color = color_hex(solid.background_color);
+            let hatch_color = color_hex(solid.pattern_color);
+            let alpha = bf.fill.alpha.to_string();
+            empty_tag(
+                w,
+                "hc:winBrush",
+                &[
+                    ("faceColor", &face_color),
+                    ("hatchColor", &hatch_color),
+                    ("alpha", &alpha),
+                ],
+            )?;
+        }
         end_tag(w, "hc:fillBrush")?;
     }
 
@@ -339,7 +361,11 @@ fn write_char_properties<W: Write>(
     Ok(())
 }
 
-fn write_char_pr<W: Write>(w: &mut Writer<W>, id: u32, cs: &CharShape) -> Result<(), SerializeError> {
+fn write_char_pr<W: Write>(
+    w: &mut Writer<W>,
+    id: u32,
+    cs: &CharShape,
+) -> Result<(), SerializeError> {
     // 속성 순서 (CharShapeType.cpp:79-86): id, height, textColor, shadeColor,
     // useFontSpace, useKerning, symMark, borderFillIDRef
     let shade = if cs.shade_color == 0 {
@@ -398,7 +424,11 @@ fn write_char_pr<W: Write>(w: &mut Writer<W>, id: u32, cs: &CharShape) -> Result
         )?;
     }
     if cs.outline_type != 0 {
-        empty_tag(w, "hh:outline", &[("type", outline_type_str(cs.outline_type))])?;
+        empty_tag(
+            w,
+            "hh:outline",
+            &[("type", outline_type_str(cs.outline_type))],
+        )?;
     }
     if cs.shadow_type != 0 {
         empty_tag(
@@ -457,7 +487,11 @@ fn write_lang_attrs<W: Write>(
 }
 
 fn bool01(b: bool) -> &'static str {
-    if b { "1" } else { "0" }
+    if b {
+        "1"
+    } else {
+        "0"
+    }
 }
 
 fn sym_mark_str(em: u8) -> &'static str {
@@ -589,10 +623,7 @@ fn tab_leader_str(f: u8) -> &'static str {
 // =====================================================================
 // <hh:numberings>
 // =====================================================================
-fn write_numberings<W: Write>(
-    w: &mut Writer<W>,
-    doc_info: &DocInfo,
-) -> Result<(), SerializeError> {
+fn write_numberings<W: Write>(w: &mut Writer<W>, doc_info: &DocInfo) -> Result<(), SerializeError> {
     if doc_info.numberings.is_empty() {
         return Ok(());
     }
@@ -936,10 +967,13 @@ mod tests {
         let doc = parse_hwpx(bytes).expect("parse");
         let ctx = SerializeContext::collect_from_document(&doc);
         let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
-        let snippet = xml.find("<hh:charPr ").and_then(|i| {
-            let end = xml[i..].find('>').map(|e| i + e)?;
-            Some(&xml[i..=end])
-        }).expect("charPr tag");
+        let snippet = xml
+            .find("<hh:charPr ")
+            .and_then(|i| {
+                let end = xml[i..].find('>').map(|e| i + e)?;
+                Some(&xml[i..=end])
+            })
+            .expect("charPr tag");
         // 속성이 id → height → textColor → shadeColor → useFontSpace → useKerning → symMark → borderFillIDRef 순서여야 함
         let ip = snippet.find("id=").unwrap();
         let hp = snippet.find("height=").unwrap();
@@ -950,5 +984,26 @@ mod tests {
         let sm = snippet.find("symMark=").unwrap();
         let bf = snippet.find("borderFillIDRef=").unwrap();
         assert!(ip < hp && hp < tc && tc < sc && sc < uf && uf < uk && uk < sm && sm < bf);
+    }
+
+    #[test]
+    fn solid_border_fill_emits_win_brush_color() {
+        use crate::model::style::{BorderFill, Fill, FillType, SolidFill};
+
+        let mut border_fill = BorderFill::default();
+        border_fill.fill = Fill {
+            fill_type: FillType::Solid,
+            solid: Some(SolidFill {
+                background_color: 0x00E7EFF1,
+                pattern_color: 0,
+                pattern_type: 0,
+            }),
+            ..Default::default()
+        };
+        let mut writer: Writer<Vec<u8>> = Writer::new(Vec::new());
+        write_border_fill(&mut writer, 0, &border_fill).unwrap();
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+        assert!(xml.contains("<hc:winBrush "));
+        assert!(xml.contains("faceColor=\"#"));
     }
 }
