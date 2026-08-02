@@ -53,6 +53,8 @@ export type EditorOperation =
         headingText?: string;
         /** 표가 다음 쪽으로 밀렸는지 확인할 표 제목. */
         captionText?: string;
+        /** 자연 조판을 유지하고 표 묶음을 위한 자동 쪽 나누기를 생략합니다. */
+        naturalFlow?: boolean;
       }>;
     };
 

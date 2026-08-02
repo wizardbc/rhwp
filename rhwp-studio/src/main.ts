@@ -1829,7 +1829,7 @@ function importStyledHtml(operation: any, position: any): any {
     }
 
     stage = '한글 표 생성';
-    const generatedTables: Array<{ headingText: string; captionText: string; estimatedHeight: number }> = [];
+    const generatedTables: Array<{ headingText: string; captionText: string; estimatedHeight: number; naturalFlow: boolean }> = [];
     const border = { type: 1, width: 1, color: '#8fa4ac' };
     for (const tableSpec of operation.tables ?? []) {
       if (!tableSpec || typeof tableSpec.marker !== 'string' || !Array.isArray(tableSpec.columns) || !tableSpec.columns.length) continue;
@@ -1846,6 +1846,7 @@ function importStyledHtml(operation: any, position: any): any {
         headingText: typeof tableSpec.headingText === 'string' ? tableSpec.headingText.trim() : '',
         captionText: typeof tableSpec.captionText === 'string' ? tableSpec.captionText.trim() : '',
         estimatedHeight: 0,
+        naturalFlow: tableSpec.naturalFlow === true,
       };
       generatedTables.push(generatedTableMeta);
       const tableRows: Array<Record<string, string>> = headerRows > 0
@@ -2026,7 +2027,7 @@ function importStyledHtml(operation: any, position: any): any {
       for (let tableIndex = generatedTables.length - 1; tableIndex >= 0; tableIndex -= 1) {
         const spec = generatedTables[tableIndex];
         const range = tableRanges[tableIndex];
-        if (!spec.captionText) continue;
+        if (!spec.captionText || spec.naturalFlow) continue;
         const captionIndex = findBodyParagraph(spec.captionText);
         if (captionIndex < 0) continue;
         try {
