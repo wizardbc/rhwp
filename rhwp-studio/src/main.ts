@@ -1737,6 +1737,38 @@ function findBodyParagraph(text: string, match: 'exact' | 'prefix' = 'exact'): n
   return -1;
 }
 
+function paragraphPage(paragraphIndex: number): number | null {
+  if (paragraphIndex < 0 || paragraphIndex >= wasm.getParagraphCount(0)) return null;
+  try {
+    return wasm.getCursorRect(0, paragraphIndex, 0).pageIndex;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 문단 앞 쪽 나누기는 해당 문단이 이미 쪽의 첫 콘텐츠이면 넣지 않는다.
+ * 그렇지 않으면 자연 조판으로 새 쪽에 올라온 제목 앞에 빈 쪽이 추가된다.
+ */
+function hasEarlierParagraphOnPage(paragraphIndex: number, pageIndex: number): boolean {
+  for (let previousIndex = paragraphIndex - 1; previousIndex >= 0; previousIndex -= 1) {
+    const previousLength = wasm.getParagraphLength(0, previousIndex);
+    if (previousLength <= 0) continue;
+    const previousPage = paragraphPage(previousIndex);
+    if (previousPage === null) continue;
+    if (previousPage === pageIndex) return true;
+    if (previousPage < pageIndex) return false;
+  }
+  return false;
+}
+
+function insertPageBreakUnlessAtPageTop(paragraphIndex: number): boolean {
+  const pageIndex = paragraphPage(paragraphIndex);
+  if (pageIndex === null || !hasEarlierParagraphOnPage(paragraphIndex, pageIndex)) return false;
+  wasm.insertPageBreak(0, paragraphIndex, 0);
+  return true;
+}
+
 function wrapTableCellText(value: string, limit: number): string[] {
   const result: string[] = [];
   for (const sourceLine of value.split('\n')) {
@@ -1797,6 +1829,7 @@ function importStyledHtml(operation: any, position: any): any {
     }
 
     stage = '한글 표 생성';
+    const generatedTables: Array<{ headingText: string; captionText: string; estimatedHeight: number }> = [];
     const border = { type: 1, width: 1, color: '#8fa4ac' };
     for (const tableSpec of operation.tables ?? []) {
       if (!tableSpec || typeof tableSpec.marker !== 'string' || !Array.isArray(tableSpec.columns) || !tableSpec.columns.length) continue;
@@ -1809,6 +1842,12 @@ function importStyledHtml(operation: any, position: any): any {
       const rowCount = rows.length + headerRows;
       const created = wasm.createTable(0, markerIndex, 0, Math.max(1, rowCount), tableSpec.columns.length);
       if (!created.ok) throw new Error(`표를 만들지 못했습니다: ${tableSpec.marker}`);
+      const generatedTableMeta = {
+        headingText: typeof tableSpec.headingText === 'string' ? tableSpec.headingText.trim() : '',
+        captionText: typeof tableSpec.captionText === 'string' ? tableSpec.captionText.trim() : '',
+        estimatedHeight: 0,
+      };
+      generatedTables.push(generatedTableMeta);
       const tableRows: Array<Record<string, string>> = headerRows > 0
         ? [Object.fromEntries(tableSpec.columns.map((column: string) => [column, column])), ...rows]
         : rows;
@@ -1829,12 +1868,11 @@ function importStyledHtml(operation: any, position: any): any {
         const rowHeight = theme === 'cover-hero'
           ? 7600
           : theme === 'cover-title'
-          // 두 줄 제목의 글줄·상하 여백이 색상 띠 안에 완전히 들어오도록
-          // 23pt 글자 두 줄에 맞춘 높이를 확보한다.
-          ? 7600
+          ? 5200
           : theme === 'cover-meta'
             ? 1850
-            : Math.min(14000, Math.max(rowIndex < headerRows ? 2200 : 2400, rowLines * 1150 + 900));
+          : Math.min(15000, Math.max(rowIndex < headerRows ? 2500 : 2750, rowLines * 1320 + 1100));
+        generatedTableMeta.estimatedHeight += rowHeight;
         tableSpec.columns.forEach((column: string, columnIndex: number) => {
           const cellIndex = rowIndex * columnCount + columnIndex;
           const lines = wrappedCells[columnIndex];
@@ -1923,7 +1961,7 @@ function importStyledHtml(operation: any, position: any): any {
           cellParagraphs.forEach((line: string, lineIndex: number) => {
             const lineLength = Array.from(line).length;
             if (lineLength > 0) {
-              const fontSize = coverHero ? (columnIndex === 0 ? 1050 : 2550) : coverTitle ? 2300 : theme === 'cover-meta' ? 900 : emphasized ? 920 : 900;
+              const fontSize = coverHero ? (columnIndex === 0 ? 1050 : 2550) : coverTitle ? 2300 : theme === 'cover-meta' ? 930 : emphasized ? 980 : 960;
               const textColor = coverHero ? (columnIndex === 0 ? '#ffffff' : '#142d46') : dataHeader ? '#202830' : coverTitle ? '#111111' : emphasized ? '#273746' : '#1f292d';
               wasm.applyCharFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, 0, lineLength, JSON.stringify({
                 bold: emphasized, fontSize, textColor, fontId: documentFontId, shadeColor: '#ffffff', borderFillId: 0,
@@ -1931,7 +1969,7 @@ function importStyledHtml(operation: any, position: any): any {
               }));
             }
             wasm.applyParaFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, JSON.stringify({
-              alignment: coverTitle || coverHero || emphasized ? 'center' : 'left', lineSpacing: coverTitle || coverHero ? 150 : 145,
+              alignment: coverTitle || coverHero || emphasized ? 'center' : 'left', lineSpacing: coverTitle || coverHero ? 150 : 155,
             }));
           });
         });
@@ -1959,7 +1997,72 @@ function importStyledHtml(operation: any, position: any): any {
       if (typeof text !== 'string' || !text.trim()) continue;
       const paragraphIndex = findBodyParagraph(text.trim());
       if (paragraphIndex < 0) throw new Error(`쪽 나누기 위치를 찾지 못했습니다: ${text}`);
-      wasm.insertPageBreak(0, paragraphIndex, 0);
+      insertPageBreakUnlessAtPageTop(paragraphIndex);
+    }
+
+    // 페이지별 컨트롤 레이아웃에서 각 표가 처음 나타나는 쪽을 찾는다.
+    // 표 제목과 실제 표 시작 쪽이 다르면 절 제목부터 함께 다음 쪽으로 옮긴다.
+    stage = '표 제목과 표 묶기';
+    const tablePageRanges = new Map<string, { firstPage: number; lastPage: number; paraIdx: number; controlIdx: number }>();
+    for (let pageIndex = 0; pageIndex < wasm.pageCount; pageIndex += 1) {
+      const controls = wasm.getPageControlLayout(pageIndex).controls ?? [];
+      for (const control of controls) {
+        if (control.type !== 'table' || control.cellIdx !== undefined) continue;
+        const paraIdx = control.paraIdx ?? -1;
+        const controlIdx = control.controlIdx ?? -1;
+        if (paraIdx < 0 || controlIdx < 0) continue;
+        const key = `${control.secIdx ?? 0}:${paraIdx}:${controlIdx}`;
+        const range = tablePageRanges.get(key);
+        if (range) {
+          range.firstPage = Math.min(range.firstPage, pageIndex);
+          range.lastPage = Math.max(range.lastPage, pageIndex);
+        } else {
+          tablePageRanges.set(key, { firstPage: pageIndex, lastPage: pageIndex, paraIdx, controlIdx });
+        }
+      }
+    }
+    const tableRanges = [...tablePageRanges.values()].sort((a, b) => a.paraIdx - b.paraIdx || a.controlIdx - b.controlIdx);
+    if (tableRanges.length === generatedTables.length) {
+      for (let tableIndex = generatedTables.length - 1; tableIndex >= 0; tableIndex -= 1) {
+        const spec = generatedTables[tableIndex];
+        const range = tableRanges[tableIndex];
+        if (!spec.captionText) continue;
+        const captionIndex = findBodyParagraph(spec.captionText);
+        if (captionIndex < 0) continue;
+        try {
+          const captionPage = wasm.getCursorRect(0, captionIndex, 0).pageIndex;
+          const captionSeparated = range.firstPage > captionPage;
+          const shortTableSplit = range.lastPage > range.firstPage && spec.estimatedHeight <= 36000;
+          if (captionSeparated || shortTableSplit) {
+            const headingIndex = spec.headingText ? findBodyParagraph(spec.headingText) : -1;
+            insertPageBreakUnlessAtPageTop(headingIndex >= 0 ? headingIndex : captionIndex);
+          }
+        } catch {
+          // 컨트롤 레이아웃이 없는 표는 기존 배치를 유지한다.
+        }
+      }
+    }
+
+    // 표를 먼저 재배치한 뒤 최종 조판을 기준으로 장·절 제목을 검사한다.
+    // 반대 순서이면 앞쪽 표를 옮긴 뒤에도 예전 쪽 위치의 제목 나눔이 남아
+    // 한 문단만 있는 페이지가 만들어진다.
+    stage = '장·절 제목과 다음 내용 묶기';
+    for (const text of [...(operation.headingTexts ?? [])].reverse()) {
+      if (typeof text !== 'string' || !text.trim()) continue;
+      const paragraphIndex = findBodyParagraph(text.trim());
+      if (paragraphIndex < 0 || paragraphIndex + 1 >= wasm.getParagraphCount(0)) continue;
+      const headingPage = paragraphPage(paragraphIndex);
+      const nextPage = paragraphPage(paragraphIndex + 1);
+      if (headingPage !== null && nextPage !== null && nextPage > headingPage) {
+        insertPageBreakUnlessAtPageTop(paragraphIndex);
+      }
+    }
+
+    stage = '본문 쪽 번호 적용';
+    if (operation.footerPageNumbers === true) {
+      wasm.applyHfTemplate(0, false, 0, 2);
+      const sectionDef = wasm.getSectionDef(0);
+      wasm.setSectionDef(0, { ...sectionDef, hideFooter: true });
     }
   } catch (error) {
     throw new Error(`${stage} 실패: ${error instanceof Error ? error.message : String(error)}`);

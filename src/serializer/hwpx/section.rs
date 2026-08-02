@@ -21,6 +21,9 @@
 
 use crate::model::control::Control;
 use crate::model::document::{Document, Section};
+use crate::model::header_footer::HeaderFooterApply;
+#[cfg(test)]
+use crate::model::header_footer::Footer;
 use crate::model::paragraph::{ColumnBreakType, LineSeg, Paragraph};
 use quick_xml::Writer;
 
@@ -78,6 +81,16 @@ pub fn write_section(
     let first_content = format!("{}{}", first_t, first_controls);
 
     let mut out = EMPTY_SECTION_XML.replacen(TEXT_SLOT, &first_content, 1);
+    out = out.replacen(
+        r#"hideFirstHeader="0""#,
+        if section.section_def.hide_header { r#"hideFirstHeader="1""# } else { r#"hideFirstHeader="0""# },
+        1,
+    );
+    out = out.replacen(
+        r#"hideFirstFooter="0""#,
+        if section.section_def.hide_footer { r#"hideFirstFooter="1""# } else { r#"hideFirstFooter="0""# },
+        1,
+    );
     out = replace_first_linesegs(&out, &first_linesegs);
 
     // 첫 문단 `<hp:p>` 태그를 IR 기반 속성으로 교체
@@ -127,12 +140,67 @@ fn render_paragraph_controls(
 ) -> Result<String, SerializeError> {
     let mut writer: Writer<Vec<u8>> = Writer::new(Vec::new());
     for control in &paragraph.controls {
-        if let Control::Table(table) = control {
-            super::table::write_table(&mut writer, table, ctx)?;
+        match control {
+            Control::Table(table) => super::table::write_table(&mut writer, table, ctx)?,
+            Control::Header(header) => {
+                let xml = render_header_footer(
+                    "header",
+                    header.apply_to,
+                    &header.paragraphs,
+                    ctx,
+                );
+                writer.get_mut().extend_from_slice(xml.as_bytes());
+            }
+            Control::Footer(footer) => {
+                let xml =
+                    render_header_footer("footer", footer.apply_to, &footer.paragraphs, ctx);
+                writer.get_mut().extend_from_slice(xml.as_bytes());
+            }
+            _ => {}
         }
     }
     String::from_utf8(writer.into_inner())
         .map_err(|error| SerializeError::XmlError(format!("표 XML UTF-8 변환 실패: {}", error)))
+}
+
+fn render_header_footer(
+    tag: &str,
+    apply_to: HeaderFooterApply,
+    paragraphs: &[Paragraph],
+    ctx: &mut SerializeContext,
+) -> String {
+    let apply_page_type = match apply_to {
+        HeaderFooterApply::Both => "BOTH",
+        HeaderFooterApply::Even => "EVEN",
+        HeaderFooterApply::Odd => "ODD",
+    };
+    let mut out = format!(
+        r#"<hp:ctrl><hp:{tag} id="" applyPageType="{apply_page_type}"><hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="1">"#,
+    );
+    for (index, paragraph) in paragraphs.iter().enumerate() {
+        if paragraph.para_shape_id > 0 {
+            ctx.para_shape_ids.reference(paragraph.para_shape_id);
+        }
+        if paragraph.style_id > 0 {
+            ctx.style_ids.reference(paragraph.style_id as u16);
+        }
+        let char_shape_id = first_run_char_shape_id(paragraph);
+        if char_shape_id > 0 {
+            ctx.char_shape_ids.reference(char_shape_id);
+        }
+        out.push_str(&format!(
+            r#"<hp:p id="{}" paraPrIDRef="{}" styleIDRef="{}" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="{}">"#,
+            index, paragraph.para_shape_id, paragraph.style_id, char_shape_id,
+        ));
+        if paragraph.text.contains('\u{0015}') {
+            out.push_str(r#"<hp:ctrl><hp:autoNum num="1" numType="PAGE"><hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar="" supscript="0"/></hp:autoNum></hp:ctrl><hp:t/>"#);
+        } else {
+            out.push_str(&render_hp_t_content(&paragraph.text));
+        }
+        out.push_str(r#"</hp:run><hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000" baseline="850" spacing="600" horzpos="0" horzsize="42520" flags="393216"/></hp:linesegarray></hp:p>"#);
+    }
+    out.push_str(&format!("</hp:subList></hp:{tag}></hp:ctrl>"));
+    out
 }
 
 /// IR의 Paragraph를 기반으로 `<hp:p>` 시작 태그를 생성.
@@ -419,6 +487,30 @@ mod tests {
             "pageBreak must be 1 for Page column_type"
         );
         assert!(xml.contains(r#"columnBreak="0""#));
+    }
+
+    #[test]
+    fn footer_page_number_and_first_page_hiding_are_serialized() {
+        let mut footer_paragraph = Paragraph::default();
+        footer_paragraph.text = "\u{0015}".to_string();
+        let mut host = Paragraph::default();
+        host.text = "본문".to_string();
+        host.controls.push(Control::Footer(Box::new(Footer {
+            apply_to: HeaderFooterApply::Both,
+            paragraphs: vec![footer_paragraph],
+            ..Footer::default()
+        })));
+        let mut section = Section::default();
+        section.section_def.hide_footer = true;
+        section.paragraphs.push(host);
+        let mut doc = Document::default();
+        doc.sections.push(section.clone());
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &ctx).unwrap()).unwrap();
+
+        assert!(xml.contains(r#"hideFirstFooter="1""#));
+        assert!(xml.contains(r#"<hp:footer id="" applyPageType="BOTH">"#));
+        assert!(xml.contains(r#"<hp:autoNum num="1" numType="PAGE">"#));
     }
 
     #[test]

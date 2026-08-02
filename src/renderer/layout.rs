@@ -494,6 +494,7 @@ impl LayoutEngine {
             } else if has_picture {
                 // Picture 컨트롤이 있는 문단
                 let mut comp = compose_paragraph(para);
+                self.substitute_hf_auto_page_number(&mut comp, para, page_number);
                 self.substitute_hf_field_markers(&mut comp, page_number);
                 if comp.tac_controls.is_empty() {
                     // 머리말/꼬리말 내 Picture: header/footer area 기준 배치
@@ -537,6 +538,7 @@ impl LayoutEngine {
                 // 텍스트도 함께 렌더링
                 if !para.text.is_empty() {
                     let mut comp = compose_paragraph(para);
+                    self.substitute_hf_auto_page_number(&mut comp, para, page_number);
                     self.substitute_hf_field_markers(&mut comp, page_number);
                     y_offset = self.layout_paragraph(
                         tree, area_node, para, Some(&comp), styles, area, y_offset,
@@ -546,6 +548,7 @@ impl LayoutEngine {
             } else {
                 // 일반 텍스트 문단 레이아웃 (필드 마커 치환 포함)
                 let mut comp = compose_paragraph(para);
+                self.substitute_hf_auto_page_number(&mut comp, para, page_number);
                 self.substitute_hf_field_markers(&mut comp, page_number);
                 y_offset = self.layout_paragraph(
                     tree, area_node, para, Some(&comp), styles, area, y_offset,
@@ -554,6 +557,31 @@ impl LayoutEngine {
             }
             if y_offset >= area.y + area.height {
                 break;
+            }
+        }
+    }
+
+    /// HWPX 꼬리말의 `<hp:autoNum numType="PAGE">`를 현재 쪽 번호로 치환한다.
+    /// HWPX 파서는 자동번호 위치에 공백 placeholder를 넣으므로, 쪽번호만 있는
+    /// 문단은 첫 텍스트 런을 실제 번호로 바꾼다.
+    fn substitute_hf_auto_page_number(
+        &self,
+        comp: &mut ComposedParagraph,
+        para: &Paragraph,
+        page_number: u32,
+    ) {
+        let has_page_number = para.controls.iter().any(|control| {
+            matches!(control, Control::AutoNumber(number) if number.number_type == crate::model::control::AutoNumberType::Page)
+        });
+        if !has_page_number {
+            return;
+        }
+        for line in &mut comp.lines {
+            for run in &mut line.runs {
+                if run.text.trim().is_empty() {
+                    run.text = page_number.to_string();
+                    return;
+                }
             }
         }
     }

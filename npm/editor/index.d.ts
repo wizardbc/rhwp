@@ -27,6 +27,14 @@ export type EditorOperation =
       pageBreakAfterText?: string;
       /** 각 텍스트와 정확히 일치하는 문단 앞에 저장 가능한 강제 쪽 나누기를 합니다. */
       pageBreakBeforeTexts?: string[];
+      /** 장·절 제목이 다음 문단과 갈라질 때 함께 이동시킬 제목 목록. */
+      headingTexts?: string[];
+      /** 표지를 제외한 본문 쪽 하단에 가운데 쪽 번호를 표시한다. */
+      footerPageNumbers?: boolean;
+      /** 저장 가능한 쪽 나눔으로 제목과 다음 문단을 같은 쪽에 유지합니다. */
+      keepWithNextTexts?: string[];
+      /** 여러 쪽으로 갈라진 짧은 문단을 다음 쪽에서 통째로 시작합니다. */
+      keepLinesTexts?: string[];
       /** 가져온 뒤 텍스트가 일치하는 문단에 한글 문단 속성을 적용합니다. */
       paragraphStyles?: Array<{
         text: string;
@@ -41,6 +49,10 @@ export type EditorOperation =
         headerRows?: number;
         labelColumn?: boolean;
         theme?: 'data' | 'summary' | 'overview' | 'cover-title' | 'cover-meta';
+        /** 표와 첫 행이 갈라질 경우 함께 다음 쪽으로 옮길 절 제목. */
+        headingText?: string;
+        /** 표가 다음 쪽으로 밀렸는지 확인할 표 제목. */
+        captionText?: string;
       }>;
     };
 
