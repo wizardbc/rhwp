@@ -192,6 +192,11 @@ export class RhwpEditor {
     return this._request('getSelection');
   }
 
+  /** 문서 전체에서 텍스트를 찾아 구조 위치와 길이를 반환합니다. */
+  async searchText(query, caseSensitive = false) {
+    return this._request('searchText', { query, caseSensitive });
+  }
+
   /**
    * 문서의 특정 구조 위치로 이동하거나 해당 문단을 선택한다.
    * 이 동작은 문서 내용을 변경하지 않으며, 원문 인용 위치 강조에 사용한다.
@@ -211,6 +216,11 @@ export class RhwpEditor {
    */
   async replaceSelection(text, expectedRevision, expectedSelection) {
     return this._request('replaceSelection', { text, expectedRevision, expectedSelection });
+  }
+
+  /** revision과 선택 앵커가 유지될 때만 글자 서식을 적용합니다. */
+  async applySelectionCharStyle(props, expectedRevision, expectedSelection) {
+    return this._request('applySelectionCharStyleGuarded', { props, expectedRevision, expectedSelection });
   }
 
   /** 현재 문서를 HWPX 바이트로 내보냅니다. */

@@ -1181,6 +1181,23 @@ function sameSelectionAnchor(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function assertExpectedSelection(expectedRevision: unknown, expectedSelection: unknown): void {
+  if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== documentRevision) {
+    throw new Error('STALE_SELECTION: 문서가 변경되었습니다. 선택 영역을 다시 읽어주세요.');
+  }
+  const actualSelection = inputHandler.getSelection();
+  if (!actualSelection) {
+    throw new Error('STALE_SELECTION: 현재 선택 영역이 없습니다.');
+  }
+  const expected = expectedSelection as { start?: unknown; end?: unknown } | undefined;
+  if (!expected?.start || !expected?.end
+    || !sameSelectionAnchor(expected.start, actualSelection.start)
+    || !sameSelectionAnchor(expected.end, actualSelection.end)) {
+    throw new Error('STALE_SELECTION: 선택 영역이 변경되었습니다.');
+  }
+}
+
 /**
  * Chat host가 승인한 텍스트 변경만 적용한다. 사용자가 그 사이 문서를 수정하거나
  * 다른 영역을 선택했다면 변경하지 않고 STALE_SELECTION 오류를 반환한다.
@@ -1192,20 +1209,7 @@ function replaceSelectionWithGuard(params: {
 }): any {
   if (!inputHandler) throw new Error('에디터가 아직 준비되지 않았습니다');
   if (typeof params.text !== 'string') throw new Error('교체할 텍스트가 필요합니다.');
-  if (!Number.isSafeInteger(params.expectedRevision) || params.expectedRevision !== documentRevision) {
-    throw new Error('STALE_SELECTION: 문서가 변경되었습니다. 선택 영역을 다시 읽어주세요.');
-  }
-
-  const actualSelection = inputHandler.getSelection();
-  if (!actualSelection) {
-    throw new Error('STALE_SELECTION: 현재 선택 영역이 없습니다.');
-  }
-  const expected = params.expectedSelection as { start?: unknown; end?: unknown } | undefined;
-  if (!expected?.start || !expected?.end
-    || !sameSelectionAnchor(expected.start, actualSelection.start)
-    || !sameSelectionAnchor(expected.end, actualSelection.end)) {
-    throw new Error('STALE_SELECTION: 선택 영역이 변경되었습니다.');
-  }
+  assertExpectedSelection(params.expectedRevision, params.expectedSelection);
 
   const revisionBeforeEdit = documentRevision;
   const context = applyTextEdit(params.text);
@@ -1215,6 +1219,23 @@ function replaceSelectionWithGuard(params: {
   return {
     ...context,
     documentRevision,
+  };
+}
+
+function applySelectionCharStyleWithGuard(params: {
+  props?: unknown;
+  expectedRevision?: unknown;
+  expectedSelection?: unknown;
+}): any {
+  assertExpectedSelection(params.expectedRevision, params.expectedSelection);
+  const revisionBeforeEdit = documentRevision;
+  const result = applySelectionCharStyleWithHistory(
+    params.props && typeof params.props === 'object' ? params.props as Record<string, unknown> : {},
+  );
+  if (documentRevision === revisionBeforeEdit) documentRevision += 1;
+  return {
+    ...result,
+    context: { ...getSelectionContext(), documentRevision },
   };
 }
 
@@ -1625,6 +1646,18 @@ function selectTarget(target: any, mode: string = 'cursor'): boolean {
         sectionIndex: target.sectionIndex,
         paragraphIndex: target.paragraphIndex,
         charOffset: 0,
+      });
+    case 'textRange':
+      if (mode === 'text') {
+        return inputHandler.selectRange(
+          { sectionIndex: target.sectionIndex, paragraphIndex: target.paragraphIndex, charOffset: target.charStart ?? 0 },
+          { sectionIndex: target.sectionIndex, paragraphIndex: target.paragraphIndex, charOffset: target.charEnd ?? target.charStart ?? 0 },
+        );
+      }
+      return inputHandler.moveCursorTo({
+        sectionIndex: target.sectionIndex,
+        paragraphIndex: target.paragraphIndex,
+        charOffset: target.charStart ?? 0,
       });
     case 'table':
       return inputHandler.selectTableObject(target.secIdx, target.paraIdx, target.controlIdx);
@@ -2376,6 +2409,9 @@ window.addEventListener('message', async (e) => {
         break;
       case 'applySelectionCharStyle':
         reply(applySelectionCharStyleWithHistory(params.props ?? {}));
+        break;
+      case 'applySelectionCharStyleGuarded':
+        reply(applySelectionCharStyleWithGuard(params ?? {}));
         break;
       case 'applySelectionParaStyle':
         reply(applySelectionParaStyleWithHistory(params.props ?? {}));

@@ -78,6 +78,22 @@ export interface SelectionContext {
   pageIndex: number;
 }
 
+export interface SearchTextResult {
+  found: boolean;
+  wrapped?: boolean;
+  sec?: number;
+  para?: number;
+  charOffset?: number;
+  length?: number;
+  cellContext?: { parentPara: number; ctrlIdx: number; cellIdx: number; cellPara: number };
+}
+
+export type SelectTarget =
+  | { kind: 'paragraph'; sectionIndex: number; paragraphIndex: number }
+  | { kind: 'textRange'; sectionIndex: number; paragraphIndex: number; charStart: number; charEnd: number }
+  | { kind: 'table'; secIdx: number; paraIdx: number; controlIdx: number }
+  | { kind: 'tableCell'; secIdx: number; paraIdx: number; controlIdx: number; cellIdx: number };
+
 export declare class RhwpEditor {
   /** HWP 파일을 로드합니다 */
   loadFile(
@@ -95,10 +111,12 @@ export declare class RhwpEditor {
   getPageSvg(page?: number): Promise<string>;
   /** 현재 선택영역의 텍스트, 위치 앵커, 문서 revision을 반환합니다. */
   getSelection(): Promise<SelectionContext>;
+  /** 문서 전체에서 텍스트를 찾아 구조 위치와 길이를 반환합니다. */
+  searchText(query: string, caseSensitive?: boolean): Promise<SearchTextResult>;
   /** 문서의 특정 구조 위치로 이동하거나 해당 문단을 선택합니다. */
   selectTarget(
-    target: { kind: 'paragraph'; sectionIndex: number; paragraphIndex: number },
-    mode?: 'cursor' | 'text',
+    target: SelectTarget,
+    mode?: 'cursor' | 'text' | 'cell',
   ): Promise<{ ok: boolean; context: SelectionContext }>;
   /** 문서 선택을 바꾸지 않고, 원문 인용 위치의 bounding box를 표시합니다. */
   highlightTarget(
@@ -110,6 +128,12 @@ export declare class RhwpEditor {
     expectedRevision: number,
     expectedSelection: NonNullable<SelectionContext['selection']>,
   ): Promise<SelectionContext>;
+  /** revision과 선택 앵커가 일치할 때만 선택영역의 글자 서식을 변경합니다. */
+  applySelectionCharStyle(
+    props: Record<string, unknown>,
+    expectedRevision: number,
+    expectedSelection: NonNullable<SelectionContext['selection']>,
+  ): Promise<{ ok: boolean; context: SelectionContext }>;
   /** 현재 문서를 HWPX 바이트로 내보냅니다. */
   exportHwpx(): Promise<Uint8Array>;
   undo(): Promise<{ ok: boolean; context: SelectionContext }>;
