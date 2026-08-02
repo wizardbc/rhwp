@@ -368,7 +368,11 @@ fn write_char_pr<W: Write>(
 ) -> Result<(), SerializeError> {
     // 속성 순서 (CharShapeType.cpp:79-86): id, height, textColor, shadeColor,
     // useFontSpace, useKerning, symMark, borderFillIDRef
-    let shade = if cs.shade_color == 0 {
+    // CharShape의 기본 흰색은 "흰색 형광펜"이 아니라 배경 없음이다.
+    // 이를 #FFFFFF로 기록하면 한컴오피스에서 색이 있는 표 셀 위 글자마다
+    // 흰 사각형이 생기므로 OWPML의 none으로 직렬화한다.
+    let shade_rgb = cs.shade_color & 0x00FF_FFFF;
+    let shade = if shade_rgb == 0 || shade_rgb == 0x00FF_FFFF {
         "none".to_string()
     } else {
         color_hex(cs.shade_color)
@@ -1005,5 +1009,16 @@ mod tests {
         let xml = String::from_utf8(writer.into_inner()).unwrap();
         assert!(xml.contains("<hc:winBrush "));
         assert!(xml.contains("faceColor=\"#"));
+    }
+
+    #[test]
+    fn default_white_char_shade_serializes_as_none() {
+        let mut writer: Writer<Vec<u8>> = Writer::new(Vec::new());
+        let mut shape = CharShape::default();
+        shape.shade_color = 0x00FF_FFFF;
+        write_char_pr(&mut writer, 0, &shape).unwrap();
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+        assert!(xml.contains("shadeColor=\"none\""));
+        assert!(!xml.contains("shadeColor=\"#FFFFFF\""));
     }
 }

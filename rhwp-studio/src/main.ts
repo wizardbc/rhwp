@@ -1825,7 +1825,7 @@ function importStyledHtml(operation: any, position: any): any {
           ? 4400
           : theme === 'cover-meta'
             ? 1850
-            : Math.min(12000, Math.max(rowIndex < headerRows ? 1900 : 2200, rowLines * 1050 + 700));
+            : Math.min(14000, Math.max(rowIndex < headerRows ? 2200 : 2400, rowLines * 1150 + 900));
         tableSpec.columns.forEach((column: string, columnIndex: number) => {
           const cellIndex = rowIndex * columnCount + columnIndex;
           const lines = wrappedCells[columnIndex];
@@ -1846,8 +1846,8 @@ function importStyledHtml(operation: any, position: any): any {
             height: rowHeight,
             paddingLeft: coverTitle ? 700 : 420,
             paddingRight: coverTitle ? 700 : 420,
-            paddingTop: coverTitle ? 720 : 260,
-            paddingBottom: coverTitle ? 720 : 260,
+            paddingTop: coverTitle ? 720 : 330,
+            paddingBottom: coverTitle ? 720 : 330,
             verticalAlign: 1,
           };
           if (coverTitle) {
@@ -1879,14 +1879,14 @@ function importStyledHtml(operation: any, position: any): any {
           lines.forEach((line: string, lineIndex: number) => {
             const lineLength = Array.from(line).length;
             if (lineLength > 0) {
-              const fontSize = coverTitle ? 2300 : theme === 'cover-meta' ? 900 : emphasized ? 880 : 850;
+              const fontSize = coverTitle ? 2300 : theme === 'cover-meta' ? 900 : emphasized ? 920 : 900;
               const textColor = coverTitle ? '#111111' : emphasized ? '#172d46' : '#1f292d';
               wasm.applyCharFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, 0, lineLength, JSON.stringify({
-                bold: emphasized, fontSize, textColor,
+                bold: emphasized, fontSize, textColor, shadeColor: '#ffffff',
               }));
             }
             wasm.applyParaFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, JSON.stringify({
-              alignment: coverTitle || emphasized ? 'center' : 'left', lineSpacing: coverTitle ? 150 : 135,
+              alignment: coverTitle || emphasized ? 'center' : 'left', lineSpacing: coverTitle ? 150 : 145,
             }));
           });
         });
