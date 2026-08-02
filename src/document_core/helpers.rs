@@ -299,6 +299,7 @@ pub(crate) fn parse_char_shape_mods(json: &str) -> crate::model::style::CharShap
     if let Some(v) = json_u16(json, "fontId") { mods.font_id = Some(v); }
     if let Some(v) = json_color(json, "textColor") { mods.text_color = Some(v); }
     if let Some(v) = json_color(json, "shadeColor") { mods.shade_color = Some(v); }
+    if let Some(v) = json_u16(json, "borderFillId") { mods.border_fill_id = Some(v); }
     // 확장 속성
     if let Some(v) = json_str(json, "underlineType") {
         mods.underline_type = Some(match v.as_str() {

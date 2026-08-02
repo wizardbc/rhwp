@@ -686,3 +686,21 @@ fn test_apply_char_shape_after_sequential_insert() {
     assert_eq!(para.char_shapes[2].char_shape_id, 10); // 다라마바사
     assert_eq!(para.char_shapes[2].start_pos, 5);
 }
+
+#[test]
+fn test_apply_char_shape_to_new_cell_paragraph_without_existing_shape() {
+    let text = "BIM 적용 과업지시서".to_string();
+    let char_count = text.chars().count();
+    let mut para = Paragraph {
+        text,
+        char_offsets: (0..char_count as u32).collect(),
+        char_shapes: vec![],
+        ..Default::default()
+    };
+
+    para.apply_char_shape_range(0, char_count, 42);
+
+    assert_eq!(para.char_shapes.len(), 1);
+    assert_eq!(para.char_shapes[0].start_pos, 0);
+    assert_eq!(para.char_shapes[0].char_shape_id, 42);
+}

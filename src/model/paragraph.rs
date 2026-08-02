@@ -763,6 +763,22 @@ impl Paragraph {
                 .sum()
         };
 
+        // 새 표 셀처럼 char_shapes가 비어 있는 문단도 서식을 받을 수 있어야 한다.
+        // 기존 구현은 아래 반복문이 한 번도 돌지 않아 적용 요청을 조용히 버렸다.
+        if self.char_shapes.is_empty() {
+            let text_utf16_start = self.char_offsets.first().copied().unwrap_or(0);
+            let mut refs = Vec::new();
+            if utf16_start > text_utf16_start {
+                refs.push(CharShapeRef { start_pos: text_utf16_start, char_shape_id: 0 });
+            }
+            refs.push(CharShapeRef { start_pos: utf16_start, char_shape_id: new_char_shape_id });
+            if utf16_end < text_utf16_end {
+                refs.push(CharShapeRef { start_pos: utf16_end, char_shape_id: 0 });
+            }
+            self.char_shapes = refs;
+            return;
+        }
+
         // 새 CharShapeRef 배열을 구축
         let mut new_refs: Vec<CharShapeRef> = Vec::new();
 

@@ -1882,7 +1882,8 @@ function importStyledHtml(operation: any, position: any): any {
               const fontSize = coverTitle ? 2300 : theme === 'cover-meta' ? 900 : emphasized ? 920 : 900;
               const textColor = coverTitle ? '#111111' : emphasized ? '#172d46' : '#1f292d';
               wasm.applyCharFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, 0, lineLength, JSON.stringify({
-                bold: emphasized, fontSize, textColor, shadeColor: '#ffffff',
+                bold: emphasized, fontSize, textColor, shadeColor: '#ffffff', borderFillId: 0,
+                outlineType: 0, shadowType: 0, emboss: false, engrave: false,
               }));
             }
             wasm.applyParaFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, JSON.stringify({

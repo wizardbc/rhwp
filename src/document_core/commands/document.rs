@@ -437,8 +437,17 @@ impl DocumentCore {
     pub fn create_blank_document_native(&mut self) -> Result<String, HwpError> {
         const BLANK_TEMPLATE: &[u8] = include_bytes!("../../../saved/blank2010.hwp");
 
-        let document = crate::parser::parse_hwp(BLANK_TEMPLATE)
+        let mut document = crate::parser::parse_hwp(BLANK_TEMPLATE)
             .map_err(|e| HwpError::InvalidFile(e.to_string()))?;
+
+        // blank2010.hwp의 기본 글자 모양은 흰색 채우기가 있는 BorderFill을
+        // 참조한다. 흰 종이에서는 보이지 않지만 색상 표 셀에 텍스트를 넣으면
+        // 각 텍스트 run 뒤에 흰 사각형이 생긴다. 새 문서는 글자 배경 없는
+        // 상태에서 시작해야 하므로 기본 글자 BorderFill을 명시적으로 제거한다.
+        for char_shape in &mut document.doc_info.char_shapes {
+            char_shape.border_fill_id = 0;
+            char_shape.raw_data = None;
+        }
 
         let styles = resolve_styles(&document.doc_info, self.dpi);
         let composed = document.sections.iter().map(|s| compose_section(s)).collect();
@@ -756,6 +765,13 @@ mod validate_linesegs_tests {
     use super::*;
     use crate::model::document::{Document, Section};
     use crate::model::paragraph::{LineSeg, Paragraph};
+
+    #[test]
+    fn blank_document_starts_without_character_background_fill() {
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        assert!(core.document.doc_info.char_shapes.iter().all(|shape| shape.border_fill_id == 0));
+    }
 
     /// 텍스트는 있는데 line_segs 가 비어있는 문단 — LinesegArrayEmpty 감지
     #[test]
