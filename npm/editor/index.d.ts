@@ -38,6 +38,7 @@ export type EditorOperation =
         rows: Array<Record<string, string>>;
         headerRows?: number;
         labelColumn?: boolean;
+        theme?: 'data' | 'summary' | 'cover-title' | 'cover-meta';
       }>;
     };
 

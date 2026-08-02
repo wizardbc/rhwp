@@ -156,10 +156,18 @@ fn render_hp_p_open(p: &Paragraph, id: u32) -> String {
     )
 }
 
-/// 문단 첫 run 의 charPrIDRef. IR의 `char_shapes[0].char_shape_id` 사용.
-/// 비어있으면 0 (기본 글자모양) 반환.
+/// 문단 첫 run 의 charPrIDRef.
+/// HTML 가져오기처럼 같은 시작 위치(0)에 새 서식을 덧붙인 경우에는 가장
+/// 나중에 등록된 참조가 현재 화면의 실제 서식이므로 이를 우선한다.
+/// 시작 위치 0이 없으면 첫 참조, 비어있으면 0을 반환한다.
 fn first_run_char_shape_id(p: &Paragraph) -> u32 {
-    p.char_shapes.first().map(|r| r.char_shape_id).unwrap_or(0)
+    p.char_shapes
+        .iter()
+        .rev()
+        .find(|reference| reference.start_pos == 0)
+        .or_else(|| p.char_shapes.first())
+        .map(|reference| reference.char_shape_id)
+        .unwrap_or(0)
 }
 
 /// Paragraph 하나를 (`<hp:t>` XML, lineseg XML, 다음 vert_cursor)로 변환.
@@ -377,6 +385,24 @@ mod tests {
             xml.find("<hp:t>")
                 .map(|i| &xml[i.saturating_sub(50)..(i + 50).min(xml.len())])
         );
+    }
+
+    #[test]
+    fn hp_run_uses_latest_char_shape_starting_at_zero() {
+        let mut para = Paragraph::default();
+        para.text = "styled heading".to_string();
+        para.char_shapes.push(CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 1,
+        });
+        para.char_shapes.push(CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 9,
+        });
+        let (doc, section) = make_doc_with_paragraph(para);
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &ctx).unwrap()).unwrap();
+        assert!(xml.contains(r#"<hp:run charPrIDRef="9"><hp:t>styled heading</hp:t>"#));
     }
 
     #[test]

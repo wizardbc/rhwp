@@ -1813,57 +1813,82 @@ function importStyledHtml(operation: any, position: any): any {
         ? [Object.fromEntries(tableSpec.columns.map((column: string) => [column, column])), ...rows]
         : rows;
       const columnCount = tableSpec.columns.length;
+      const theme = typeof tableSpec.theme === 'string' ? tableSpec.theme : 'data';
       tableRows.forEach((row, rowIndex) => {
-        const charactersPerLine = Math.max(8, Math.floor(58 / columnCount));
+        const charactersPerLine = theme === 'cover-title' ? 42 : Math.max(8, Math.floor(58 / columnCount));
         const wrappedCells = tableSpec.columns.map((column: string) => wrapTableCellText(
           typeof row?.[column] === 'string' && row[column].trim() ? row[column].trim() : ' ',
           charactersPerLine,
         ));
         const rowLines = Math.max(1, ...wrappedCells.map((lines: string[]) => lines.length));
-        const rowHeight = Math.min(12000, Math.max(rowIndex < headerRows ? 1900 : 2200, rowLines * 1050 + 700));
+        const rowHeight = theme === 'cover-title'
+          ? 4400
+          : theme === 'cover-meta'
+            ? 1850
+            : Math.min(12000, Math.max(rowIndex < headerRows ? 1900 : 2200, rowLines * 1050 + 700));
         tableSpec.columns.forEach((column: string, columnIndex: number) => {
-        const cellIndex = rowIndex * columnCount + columnIndex;
-        const lines = wrappedCells[columnIndex];
-        const text = lines.join('');
-        replaceTopLevelCellText({ secIdx: 0, paraIdx: created.paraIdx, controlIdx: created.controlIdx, cellIdx: cellIndex }, text);
-        const splitOffsets: number[] = [];
-        let runningOffset = 0;
-        lines.slice(0, -1).forEach((line: string) => {
-          runningOffset += Array.from(line).length;
-          splitOffsets.push(runningOffset);
-        });
-        [...splitOffsets].reverse().forEach((offset: number) => {
-          wasm.splitParagraphInCell(0, created.paraIdx, created.controlIdx, cellIndex, 0, offset);
-        });
-        const emphasized = rowIndex < headerRows || (tableSpec.labelColumn && columnIndex === 0);
-        const baseCellProps: Record<string, unknown> = {
-          height: rowHeight,
-          paddingLeft: 420, paddingRight: 420, paddingTop: 260, paddingBottom: 260,
-          verticalAlign: 1,
-        };
-        if (tableSpec.labelColumn && columnCount === 2) {
-          baseCellProps.width = columnIndex === 0 ? 11000 : 31500;
-        }
-        if (emphasized) {
-          wasm.setCellProperties(0, created.paraIdx, created.controlIdx, cellIndex, {
-            ...baseCellProps, isHeader: rowIndex < headerRows,
-            borderLeft: border, borderRight: border, borderTop: border, borderBottom: border,
-            fillType: 'solid', fillColor: '#e7eff1', patternColor: '#000000', patternType: 0,
+          const cellIndex = rowIndex * columnCount + columnIndex;
+          const lines = wrappedCells[columnIndex];
+          const text = lines.join('');
+          replaceTopLevelCellText({ secIdx: 0, paraIdx: created.paraIdx, controlIdx: created.controlIdx, cellIdx: cellIndex }, text);
+          const splitOffsets: number[] = [];
+          let runningOffset = 0;
+          lines.slice(0, -1).forEach((line: string) => {
+            runningOffset += Array.from(line).length;
+            splitOffsets.push(runningOffset);
           });
-        } else {
-          wasm.setCellProperties(0, created.paraIdx, created.controlIdx, cellIndex, baseCellProps);
-        }
-        lines.forEach((line: string, lineIndex: number) => {
-          const lineLength = Array.from(line).length;
-          if (lineLength > 0) {
-            wasm.applyCharFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, 0, lineLength, JSON.stringify({
-              bold: emphasized, fontSize: emphasized ? 880 : 850, textColor: emphasized ? '#173f4b' : '#1f292d',
-            }));
+          [...splitOffsets].reverse().forEach((offset: number) => {
+            wasm.splitParagraphInCell(0, created.paraIdx, created.controlIdx, cellIndex, 0, offset);
+          });
+          const coverTitle = theme === 'cover-title';
+          const emphasized = coverTitle || rowIndex < headerRows || (tableSpec.labelColumn && columnIndex === 0);
+          const baseCellProps: Record<string, unknown> = {
+            height: rowHeight,
+            paddingLeft: coverTitle ? 700 : 420,
+            paddingRight: coverTitle ? 700 : 420,
+            paddingTop: coverTitle ? 720 : 260,
+            paddingBottom: coverTitle ? 720 : 260,
+            verticalAlign: 1,
+          };
+          if (coverTitle) {
+            baseCellProps.width = 42500;
+          } else if (tableSpec.labelColumn && columnCount === 2) {
+            const labelWidth = theme === 'cover-meta' ? 9000 : 11000;
+            baseCellProps.width = columnIndex === 0 ? labelWidth : 42500 - labelWidth;
           }
-          wasm.applyParaFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, JSON.stringify({
-            alignment: emphasized ? 'center' : 'left', lineSpacing: 135,
-          }));
-        });
+          const cellProps: Record<string, unknown> = { ...baseCellProps };
+          if (coverTitle) {
+            const coverBorder = { type: 1, width: 3, color: '#24558c' };
+            Object.assign(cellProps, {
+              borderLeft: { type: 0, width: 0, color: '#ffffff' },
+              borderRight: { type: 0, width: 0, color: '#ffffff' },
+              borderTop: coverBorder,
+              borderBottom: coverBorder,
+              fillType: 'solid', fillColor: '#dce5f3', patternColor: '#000000', patternType: 0,
+            });
+          } else if (emphasized) {
+            Object.assign(cellProps, {
+              isHeader: rowIndex < headerRows,
+              borderLeft: border, borderRight: border, borderTop: border, borderBottom: border,
+              fillType: 'solid', fillColor: theme === 'cover-meta' ? '#e8edf4' : '#e7eff1', patternColor: '#000000', patternType: 0,
+            });
+          } else if (theme === 'cover-meta' || theme === 'summary') {
+            Object.assign(cellProps, { borderLeft: border, borderRight: border, borderTop: border, borderBottom: border });
+          }
+          wasm.setCellProperties(0, created.paraIdx, created.controlIdx, cellIndex, cellProps);
+          lines.forEach((line: string, lineIndex: number) => {
+            const lineLength = Array.from(line).length;
+            if (lineLength > 0) {
+              const fontSize = coverTitle ? 2300 : theme === 'cover-meta' ? 900 : emphasized ? 880 : 850;
+              const textColor = coverTitle ? '#111111' : emphasized ? '#172d46' : '#1f292d';
+              wasm.applyCharFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, 0, lineLength, JSON.stringify({
+                bold: emphasized, fontSize, textColor,
+              }));
+            }
+            wasm.applyParaFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, JSON.stringify({
+              alignment: coverTitle || emphasized ? 'center' : 'left', lineSpacing: coverTitle ? 150 : 135,
+            }));
+          });
         });
       });
       wasm.setTableProperties(0, created.paraIdx, created.controlIdx, {
