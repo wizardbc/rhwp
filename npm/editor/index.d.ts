@@ -15,6 +15,11 @@ export interface LoadResult {
   pageCount: number;
 }
 
+export type EditorOperation =
+  | { type: 'insertAtCursor'; text: string }
+  | { type: 'replaceSelectionOrInsert'; text: string }
+  | { type: 'selectTarget'; target: { kind: 'paragraph'; sectionIndex: number; paragraphIndex: number }; mode?: 'cursor' | 'text' };
+
 export interface DocumentPosition {
   sectionIndex: number;
   paragraphIndex: number;
@@ -42,6 +47,10 @@ export declare class RhwpEditor {
     fileName?: string,
     options?: { validationChoice?: 'prompt' | 'as-is'; readOnly?: boolean },
   ): Promise<LoadResult>;
+  /** 빈 HWP 문서를 생성합니다. exportHwpx()로 HWPX를 내보낼 수 있습니다. */
+  createNewDocument(): Promise<LoadResult>;
+  /** 명시적으로 생성한 문서의 초기 내용 또는 확인된 편집 작업을 적용합니다. */
+  applyAiOperations(operations: EditorOperation[]): Promise<{ ok: boolean; context: SelectionContext }>;
   /** 현재 문서의 페이지 수를 반환합니다 */
   pageCount(): Promise<number>;
   /** 특정 페이지를 SVG 문자열로 렌더링합니다 */

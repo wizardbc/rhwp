@@ -667,15 +667,17 @@ function notifyHwpxBetaIfNeeded(): void {
   if (sb) sb.textContent = 'HWPX 베타 모드 — 저장은 다음 업데이트에서 지원됩니다';
 }
 
-async function createNewDocument(): Promise<void> {
+async function createNewDocument(): Promise<{ pageCount: number }> {
   const msg = sbMessage();
   try {
     msg.textContent = '새 문서 생성 중...';
     const docInfo = wasm.createNewDocument();
     await initializeDocument(docInfo, `새 문서.hwp — ${docInfo.pageCount}페이지`);
+    return { pageCount: docInfo.pageCount };
   } catch (error) {
     msg.textContent = `새 문서 생성 실패: ${error}`;
     console.error('[main] 새 문서 생성 실패:', error);
+    throw error;
   }
 }
 
@@ -1943,6 +1945,9 @@ window.addEventListener('message', async (e) => {
         reply({ pageCount: docInfo.pageCount });
         break;
       }
+      case 'createNewDocument':
+        reply(await createNewDocument());
+        break;
       case 'loadBlobUrl': {
         const response = await fetch(params.url);
         if (!response.ok) {

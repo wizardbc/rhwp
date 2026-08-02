@@ -157,6 +157,19 @@ export class RhwpEditor {
     );
   }
 
+  /** 빈 문서를 생성합니다. 생성 뒤 applyAiOperations로 초기 내용을 채울 수 있습니다. */
+  async createNewDocument() {
+    return this._request('createNewDocument', {}, 30000);
+  }
+
+  /**
+   * 명시적으로 생성한 문서의 초기 내용 또는 사용자가 확인한 편집 작업을 적용합니다.
+   * 선택영역 수정은 replaceSelection을 우선 사용해야 합니다.
+   */
+  async applyAiOperations(operations) {
+    return this._request('applyAiOperations', { operations }, 30000);
+  }
+
   /**
    * 현재 문서의 페이지 수를 반환합니다.
    * @returns 페이지 수
