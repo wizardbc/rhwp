@@ -1777,7 +1777,7 @@ function importStyledHtml(operation: any, position: any): any {
   // font-family를 실제 HWP CharShape으로 연결할 수 있다.
   let stage = '글꼴 등록';
   try {
-    wasm.findOrCreateFontId('함초롬돋움');
+    const documentFontId = wasm.findOrCreateFontId('함초롬돋움');
     stage = 'HTML 문서 구조 변환';
     const imported = JSON.parse(wasm.pasteHtml(
       position.sectionIndex,
@@ -1815,14 +1815,23 @@ function importStyledHtml(operation: any, position: any): any {
       const columnCount = tableSpec.columns.length;
       const theme = typeof tableSpec.theme === 'string' ? tableSpec.theme : 'data';
       tableRows.forEach((row, rowIndex) => {
-        const charactersPerLine = theme === 'cover-title' ? 42 : Math.max(8, Math.floor(58 / columnCount));
-        const wrappedCells = tableSpec.columns.map((column: string) => wrapTableCellText(
+        const wrappedCells = tableSpec.columns.map((column: string, columnIndex: number) => wrapTableCellText(
           typeof row?.[column] === 'string' && row[column].trim() ? row[column].trim() : ' ',
-          charactersPerLine,
+          theme === 'cover-title'
+            ? 42
+            : theme === 'cover-hero'
+              ? 28
+              : theme === 'overview'
+                ? (columnIndex % 2 === 0 ? 8 : 18)
+                : Math.max(8, Math.floor(62 / columnCount)),
         ));
         const rowLines = Math.max(1, ...wrappedCells.map((lines: string[]) => lines.length));
-        const rowHeight = theme === 'cover-title'
-          ? 4400
+        const rowHeight = theme === 'cover-hero'
+          ? 7600
+          : theme === 'cover-title'
+          // 두 줄 제목의 글줄·상하 여백이 색상 띠 안에 완전히 들어오도록
+          // 23pt 글자 두 줄에 맞춘 높이를 확보한다.
+          ? 7600
           : theme === 'cover-meta'
             ? 1850
             : Math.min(14000, Math.max(rowIndex < headerRows ? 2200 : 2400, rowLines * 1150 + 900));
@@ -1830,10 +1839,27 @@ function importStyledHtml(operation: any, position: any): any {
           const cellIndex = rowIndex * columnCount + columnIndex;
           const lines = wrappedCells[columnIndex];
           const text = lines.join('');
+          const preflightWidth = theme === 'cover-title'
+            ? 42500
+            : theme === 'cover-hero'
+              ? (columnIndex === 0 ? 7800 : 34700)
+              : theme === 'overview' && columnCount === 4
+                ? (columnIndex % 2 === 0 ? 6200 : 15050)
+                : tableSpec.labelColumn && columnCount === 2
+                  ? (columnIndex === 0 ? (theme === 'cover-meta' ? 9000 : 11000) : 42500 - (theme === 'cover-meta' ? 9000 : 11000))
+                  : Math.floor(42500 / columnCount);
+          // 셀 텍스트를 넣을 때 실제 열 너비를 기준으로 줄바꿈하도록 너비를
+          // 먼저 적용한다. 기본 너비 상태에서 텍스트를 넣은 뒤 너비를 바꾸면
+          // 리플로우 결과가 남아 글자가 겹친다.
+          wasm.setCellProperties(0, created.paraIdx, created.controlIdx, cellIndex, { width: preflightWidth });
+          // rhwp의 표 셀 자동 리플로우만으로는 긴 한국어 문장이 겹칠 수 있어
+          // 계산한 줄 단위로 문단을 나눈다. 생성기에서는 큰 요구표마다 새 쪽을
+          // 배정해 한 행이 쪽 경계에서 갈라지지 않도록 한다.
+          const cellParagraphs = lines;
           replaceTopLevelCellText({ secIdx: 0, paraIdx: created.paraIdx, controlIdx: created.controlIdx, cellIdx: cellIndex }, text);
           const splitOffsets: number[] = [];
           let runningOffset = 0;
-          lines.slice(0, -1).forEach((line: string) => {
+          cellParagraphs.slice(0, -1).forEach((line: string) => {
             runningOffset += Array.from(line).length;
             splitOffsets.push(runningOffset);
           });
@@ -1841,23 +1867,41 @@ function importStyledHtml(operation: any, position: any): any {
             wasm.splitParagraphInCell(0, created.paraIdx, created.controlIdx, cellIndex, 0, offset);
           });
           const coverTitle = theme === 'cover-title';
-          const emphasized = coverTitle || rowIndex < headerRows || (tableSpec.labelColumn && columnIndex === 0);
+          const coverHero = theme === 'cover-hero';
+          const dataHeader = theme === 'data' && rowIndex < headerRows;
+          const overviewLabel = theme === 'overview' && columnIndex % 2 === 0;
+          const emphasized = coverTitle || coverHero || overviewLabel || rowIndex < headerRows || (tableSpec.labelColumn && columnIndex === 0);
           const baseCellProps: Record<string, unknown> = {
             height: rowHeight,
-            paddingLeft: coverTitle ? 700 : 420,
-            paddingRight: coverTitle ? 700 : 420,
-            paddingTop: coverTitle ? 720 : 330,
-            paddingBottom: coverTitle ? 720 : 330,
+            paddingLeft: coverTitle || coverHero ? 700 : 420,
+            paddingRight: coverTitle || coverHero ? 700 : 420,
+            paddingTop: coverTitle ? 720 : coverHero ? 900 : 330,
+            paddingBottom: coverTitle ? 720 : coverHero ? 900 : 330,
             verticalAlign: 1,
           };
           if (coverTitle) {
             baseCellProps.width = 42500;
+          } else if (coverHero) {
+            baseCellProps.width = columnIndex === 0 ? 7800 : 34700;
+          } else if (theme === 'overview' && columnCount === 4) {
+            baseCellProps.width = columnIndex % 2 === 0 ? 6200 : 15050;
           } else if (tableSpec.labelColumn && columnCount === 2) {
             const labelWidth = theme === 'cover-meta' ? 9000 : 11000;
             baseCellProps.width = columnIndex === 0 ? labelWidth : 42500 - labelWidth;
+          } else {
+            baseCellProps.width = Math.floor(42500 / columnCount);
           }
           const cellProps: Record<string, unknown> = { ...baseCellProps };
-          if (coverTitle) {
+          if (coverHero) {
+            const heroBorder = { type: 1, width: 4, color: '#24558c' };
+            Object.assign(cellProps, {
+              borderLeft: columnIndex === 0 ? heroBorder : { type: 0, width: 0, color: '#ffffff' },
+              borderRight: columnIndex === columnCount - 1 ? heroBorder : { type: 0, width: 0, color: '#ffffff' },
+              borderTop: heroBorder,
+              borderBottom: heroBorder,
+              fillType: 'solid', fillColor: columnIndex === 0 ? '#24558c' : '#e8eef7', patternColor: '#000000', patternType: 0,
+            });
+          } else if (coverTitle) {
             const coverBorder = { type: 1, width: 3, color: '#24558c' };
             Object.assign(cellProps, {
               borderLeft: { type: 0, width: 0, color: '#ffffff' },
@@ -1870,30 +1914,30 @@ function importStyledHtml(operation: any, position: any): any {
             Object.assign(cellProps, {
               isHeader: rowIndex < headerRows,
               borderLeft: border, borderRight: border, borderTop: border, borderBottom: border,
-              fillType: 'solid', fillColor: theme === 'cover-meta' ? '#e8edf4' : '#e7eff1', patternColor: '#000000', patternType: 0,
+              fillType: 'solid', fillColor: dataHeader ? '#dfe3e7' : theme === 'cover-meta' ? '#e4e9ef' : overviewLabel ? '#eef0f2' : '#e7eff1', patternColor: '#000000', patternType: 0,
             });
-          } else if (theme === 'cover-meta' || theme === 'summary') {
+          } else {
             Object.assign(cellProps, { borderLeft: border, borderRight: border, borderTop: border, borderBottom: border });
           }
           wasm.setCellProperties(0, created.paraIdx, created.controlIdx, cellIndex, cellProps);
-          lines.forEach((line: string, lineIndex: number) => {
+          cellParagraphs.forEach((line: string, lineIndex: number) => {
             const lineLength = Array.from(line).length;
             if (lineLength > 0) {
-              const fontSize = coverTitle ? 2300 : theme === 'cover-meta' ? 900 : emphasized ? 920 : 900;
-              const textColor = coverTitle ? '#111111' : emphasized ? '#172d46' : '#1f292d';
+              const fontSize = coverHero ? (columnIndex === 0 ? 1050 : 2550) : coverTitle ? 2300 : theme === 'cover-meta' ? 900 : emphasized ? 920 : 900;
+              const textColor = coverHero ? (columnIndex === 0 ? '#ffffff' : '#142d46') : dataHeader ? '#202830' : coverTitle ? '#111111' : emphasized ? '#273746' : '#1f292d';
               wasm.applyCharFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, 0, lineLength, JSON.stringify({
-                bold: emphasized, fontSize, textColor, shadeColor: '#ffffff', borderFillId: 0,
+                bold: emphasized, fontSize, textColor, fontId: documentFontId, shadeColor: '#ffffff', borderFillId: 0,
                 outlineType: 0, shadowType: 0, emboss: false, engrave: false,
               }));
             }
             wasm.applyParaFormatInCell(0, created.paraIdx, created.controlIdx, cellIndex, lineIndex, JSON.stringify({
-              alignment: coverTitle || emphasized ? 'center' : 'left', lineSpacing: coverTitle ? 150 : 145,
+              alignment: coverTitle || coverHero || emphasized ? 'center' : 'left', lineSpacing: coverTitle || coverHero ? 150 : 145,
             }));
           });
         });
       });
       wasm.setTableProperties(0, created.paraIdx, created.controlIdx, {
-        pageBreak: 1, repeatHeader: headerRows > 0, cellSpacing: 0,
+        pageBreak: 2, repeatHeader: headerRows > 0, cellSpacing: 0,
         paddingLeft: 160, paddingRight: 160, paddingTop: 100, paddingBottom: 100,
       });
     }
@@ -1905,6 +1949,17 @@ function importStyledHtml(operation: any, position: any): any {
       if (paragraphIndex >= 0) {
         wasm.applyParaFormat(0, paragraphIndex, JSON.stringify(style.props));
       }
+    }
+
+    // pageBreakBefore 문단 속성은 일부 외부 문서 형식에서만 안정적으로
+    // 왕복된다. 새 문서 생성에서는 실제 hp:p pageBreak="1"로 직렬화되는
+    // Ctrl+Enter 구조를 넣어 저장 후 재열기에도 같은 쪽 구성을 보장한다.
+    stage = '강제 쪽 나누기 적용';
+    for (const text of operation.pageBreakBeforeTexts ?? []) {
+      if (typeof text !== 'string' || !text.trim()) continue;
+      const paragraphIndex = findBodyParagraph(text.trim());
+      if (paragraphIndex < 0) throw new Error(`쪽 나누기 위치를 찾지 못했습니다: ${text}`);
+      wasm.insertPageBreak(0, paragraphIndex, 0);
     }
   } catch (error) {
     throw new Error(`${stage} 실패: ${error instanceof Error ? error.message : String(error)}`);

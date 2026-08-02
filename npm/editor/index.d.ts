@@ -25,6 +25,8 @@ export type EditorOperation =
       html: string;
       /** 이 텍스트와 정확히 일치하는 문단 뒤에서 강제 쪽 나누기를 합니다. */
       pageBreakAfterText?: string;
+      /** 각 텍스트와 정확히 일치하는 문단 앞에 저장 가능한 강제 쪽 나누기를 합니다. */
+      pageBreakBeforeTexts?: string[];
       /** 가져온 뒤 텍스트가 일치하는 문단에 한글 문단 속성을 적용합니다. */
       paragraphStyles?: Array<{
         text: string;
@@ -38,7 +40,7 @@ export type EditorOperation =
         rows: Array<Record<string, string>>;
         headerRows?: number;
         labelColumn?: boolean;
-        theme?: 'data' | 'summary' | 'cover-title' | 'cover-meta';
+        theme?: 'data' | 'summary' | 'overview' | 'cover-title' | 'cover-meta';
       }>;
     };
 
