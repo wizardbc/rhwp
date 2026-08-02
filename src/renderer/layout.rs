@@ -1502,34 +1502,40 @@ impl LayoutEngine {
                     let idx = (bf_id as usize).saturating_sub(1);
                     let border_style = styles.border_styles.get(idx);
                     let fill_color = border_style.and_then(|bs| bs.fill_color);
-                    let (stroke_color, stroke_width) = if let Some(bs) = border_style {
-                        let has_border = bs.borders.iter().any(|b|
-                            !matches!(b.line_type, crate::model::style::BorderLineType::None) && b.width > 0);
-                        if has_border {
-                            let top = &bs.borders[2];
-                            (Some(top.color), super::layout::border_rendering::border_width_to_px(top.width))
-                        } else {
-                            (None, 0.0)
-                        }
-                    } else {
-                        (None, 0.0)
-                    };
-                    let rect_id = tree.next_id();
-                    let rect_node = RenderNode::new(
-                        rect_id,
-                        RenderNodeType::Rectangle(super::render_tree::RectangleNode::new(
-                            0.0,
-                            super::ShapeStyle {
-                                fill_color,
-                                stroke_color,
-                                stroke_width,
-                                ..Default::default()
-                            },
-                            None,
-                        )),
-                        super::render_tree::BoundingBox::new(x, y_start, w, height),
-                    );
-                    col_node.children.insert(0, rect_node);
+                    let mut decorations = Vec::new();
+                    if fill_color.is_some() {
+                        let rect_id = tree.next_id();
+                        decorations.push(RenderNode::new(
+                            rect_id,
+                            RenderNodeType::Rectangle(super::render_tree::RectangleNode::new(
+                                0.0,
+                                super::ShapeStyle {
+                                    fill_color,
+                                    stroke_color: None,
+                                    stroke_width: 0.0,
+                                    ..Default::default()
+                                },
+                                None,
+                            )),
+                            super::render_tree::BoundingBox::new(x, y_start, w, height),
+                        ));
+                    }
+                    if let Some(bs) = border_style {
+                        let [left, right, top, bottom] = &bs.borders;
+                        decorations.extend(super::layout::border_rendering::create_border_line_nodes(
+                            tree, top, x, y_start, x + w, y_start,
+                        ));
+                        decorations.extend(super::layout::border_rendering::create_border_line_nodes(
+                            tree, bottom, x, y_end, x + w, y_end,
+                        ));
+                        decorations.extend(super::layout::border_rendering::create_border_line_nodes(
+                            tree, left, x, y_start, x, y_end,
+                        ));
+                        decorations.extend(super::layout::border_rendering::create_border_line_nodes(
+                            tree, right, x + w, y_start, x + w, y_end,
+                        ));
+                    }
+                    col_node.children.splice(0..0, decorations);
                 }
             }
         }
