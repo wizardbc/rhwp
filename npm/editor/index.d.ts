@@ -78,6 +78,12 @@ export interface SelectionContext {
   pageIndex: number;
 }
 
+export interface SelectionStyleSnapshot {
+  hasSelection: boolean;
+  charProps: Record<string, unknown> | null;
+  paraProps: Record<string, unknown> | null;
+}
+
 export interface SearchTextResult {
   found: boolean;
   wrapped?: boolean;
@@ -111,6 +117,8 @@ export declare class RhwpEditor {
   getPageSvg(page?: number): Promise<string>;
   /** 현재 선택영역의 텍스트, 위치 앵커, 문서 revision을 반환합니다. */
   getSelection(): Promise<SelectionContext>;
+  /** 현재 선택영역 시작점의 글자·문단 속성을 반환합니다. */
+  getSelectionStyleSnapshot(): Promise<SelectionStyleSnapshot>;
   /** 문서 전체에서 텍스트를 찾아 구조 위치와 길이를 반환합니다. */
   searchText(query: string, caseSensitive?: boolean): Promise<SearchTextResult>;
   /** 문서의 특정 구조 위치로 이동하거나 해당 문단을 선택합니다. */

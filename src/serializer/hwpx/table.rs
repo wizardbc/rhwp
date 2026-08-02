@@ -272,19 +272,9 @@ fn write_sub_list<W: Write>(
             ],
         )?;
 
-        let cs = para
-            .char_shapes
-            .iter()
-            .rev()
-            .find(|item| item.start_pos == 0)
-            .or_else(|| para.char_shapes.first())
-            .map(|r| r.char_shape_id)
-            .unwrap_or(0);
-        let cs_str = cs.to_string();
-        start_tag_attrs(w, "hp:run", &[("charPrIDRef", &cs_str)])?;
-        // 텍스트만 출력 (탭·소프트브레이크는 Stage 3 범위에서 제외 — section.rs 와 동일 방식으로 단순화)
-        write_cell_text(w, &para.text)?;
-        end_tag(w, "hp:run")?;
+        w.get_mut()
+            .write_all(super::section::render_paragraph_text_runs(para).as_bytes())
+            .map_err(|error| SerializeError::XmlError(error.to_string()))?;
 
         // <hp:linesegarray> 최소 1개 lineseg
         start_tag(w, "hp:linesegarray")?;

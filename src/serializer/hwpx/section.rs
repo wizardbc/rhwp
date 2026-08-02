@@ -32,7 +32,6 @@ use super::utils::xml_escape;
 use super::SerializeError;
 
 const EMPTY_SECTION_XML: &str = include_str!("templates/empty_section0.xml");
-const TEXT_SLOT: &str = "<hp:t/>";
 const LINESEG_SLOT_OPEN: &str = "<hp:linesegarray>";
 const LINESEG_SLOT_CLOSE: &str = "</hp:linesegarray>";
 const PARA_CLOSE: &str = "</hp:p></hs:sec>";
@@ -62,25 +61,40 @@ pub fn write_section(
     let mut vert_cursor: u32 = 0;
 
     let first_para = section.paragraphs.first();
-    let (first_t, first_controls, first_linesegs, first_advance) = match first_para {
+    let (first_runs, first_controls, first_linesegs, first_advance) = match first_para {
         Some(p) => {
-            let (text, linesegs, advance) = render_paragraph_parts(p, vert_cursor);
+            let (_, linesegs, advance) = render_paragraph_parts(p, vert_cursor);
             (
-                text,
+                render_paragraph_text_runs(p),
                 render_paragraph_controls(p, &mut control_ctx)?,
                 linesegs,
                 advance,
             )
         }
         None => {
-            let (text, linesegs, advance) = render_paragraph_parts_for_text("", vert_cursor);
-            (text, String::new(), linesegs, advance)
+            let (_, linesegs, advance) = render_paragraph_parts_for_text("", vert_cursor);
+            (
+                r#"<hp:run charPrIDRef="0"><hp:t/></hp:run>"#.to_string(),
+                String::new(),
+                linesegs,
+                advance,
+            )
         }
     };
     vert_cursor = first_advance;
-    let first_content = format!("{}{}", first_t, first_controls);
+    let first_control_run = first_para
+        .filter(|_| !first_controls.is_empty())
+        .map(|p| {
+            format!(
+                r#"<hp:run charPrIDRef="{}">{}</hp:run>"#,
+                first_run_char_shape_id(p),
+                first_controls
+            )
+        })
+        .unwrap_or_default();
+    let first_content = format!("{}{}", first_runs, first_control_run);
 
-    let mut out = EMPTY_SECTION_XML.replacen(TEXT_SLOT, &first_content, 1);
+    let mut out = EMPTY_SECTION_XML.replacen(TEMPLATE_RUN_BEFORE_TEXT, &first_content, 1);
     out = out.replacen(
         r#"hideFirstHeader="0""#,
         if section.section_def.hide_header { r#"hideFirstHeader="1""# } else { r#"hideFirstHeader="0""# },
@@ -97,31 +111,25 @@ pub fn write_section(
     if let Some(p) = first_para {
         let new_p_tag = render_hp_p_open(p, 0);
         out = out.replacen(TEMPLATE_FIRST_P_TAG, &new_p_tag, 1);
-
-        // 첫 문단의 텍스트용 <hp:run> 의 charPrIDRef 를 IR 기반으로 교체
-        // 템플릿에서 TEXT_SLOT 이 있던 자리 바로 앞의 <hp:run charPrIDRef="0"> 패턴.
-        let first_run_cs = first_run_char_shape_id(p);
-        let new_run = format!(r#"<hp:run charPrIDRef="{}">"#, first_run_cs);
-        let replacement = format!("{}{}", new_run, &first_content);
-        // 이미 first_t 는 out 에 들어갔으므로 그 직전의 <hp:run charPrIDRef="0"> 만 변경
-        let anchor = format!("{}{}", r#"<hp:run charPrIDRef="0">"#, &first_content);
-        if out.contains(&anchor) {
-            out = out.replacen(&anchor, &replacement, 1);
-        }
     }
 
     // 추가 문단: `</hp:p></hs:sec>` 직전에 `<hp:p>` 요소를 삽입.
     if section.paragraphs.len() > 1 {
         let mut extra = String::new();
         for (idx, p) in section.paragraphs.iter().enumerate().skip(1) {
-            let (t, linesegs, advance) = render_paragraph_parts(p, vert_cursor);
+            let (_, linesegs, advance) = render_paragraph_parts(p, vert_cursor);
             vert_cursor = advance;
             let cs = first_run_char_shape_id(p);
             extra.push_str(&render_hp_p_open(p, idx as u32));
-            extra.push_str(&format!(r#"<hp:run charPrIDRef="{}">"#, cs));
-            extra.push_str(&t);
-            extra.push_str(&render_paragraph_controls(p, &mut control_ctx)?);
-            extra.push_str(r#"</hp:run><hp:linesegarray>"#);
+            extra.push_str(&render_paragraph_text_runs(p));
+            let controls = render_paragraph_controls(p, &mut control_ctx)?;
+            if !controls.is_empty() {
+                extra.push_str(&format!(
+                    r#"<hp:run charPrIDRef="{}">{}</hp:run>"#,
+                    cs, controls
+                ));
+            }
+            extra.push_str(r#"<hp:linesegarray>"#);
             extra.push_str(&linesegs);
             extra.push_str(r#"</hp:linesegarray></hp:p>"#);
         }
@@ -236,6 +244,60 @@ fn first_run_char_shape_id(p: &Paragraph) -> u32 {
         .or_else(|| p.char_shapes.first())
         .map(|reference| reference.char_shape_id)
         .unwrap_or(0)
+}
+
+/// 문단의 CharShapeRef 경계를 실제 HWPX run으로 보존한다.
+/// offset은 UTF-16 단위이므로 Rust byte index로 안전하게 변환한다.
+pub(crate) fn render_paragraph_text_runs(p: &Paragraph) -> String {
+    let utf16_len = p.text.encode_utf16().count() as u32;
+    let mut boundaries: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    for reference in &p.char_shapes {
+        if reference.start_pos <= utf16_len {
+            boundaries.insert(reference.start_pos, reference.char_shape_id);
+        }
+    }
+    boundaries
+        .entry(0)
+        .or_insert_with(|| first_run_char_shape_id(p));
+    let points: Vec<(u32, u32)> = boundaries.into_iter().collect();
+    let mut out = String::new();
+    for (index, (start, char_shape_id)) in points.iter().enumerate() {
+        let end = points
+            .get(index + 1)
+            .map(|item| item.0)
+            .unwrap_or(utf16_len);
+        if end < *start {
+            continue;
+        }
+        let start_byte = byte_index_at_utf16(&p.text, *start);
+        let end_byte = byte_index_at_utf16(&p.text, end);
+        if start_byte == end_byte && !p.text.is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            r#"<hp:run charPrIDRef="{}">{}</hp:run>"#,
+            char_shape_id,
+            render_hp_t_content(&p.text[start_byte..end_byte])
+        ));
+    }
+    if out.is_empty() {
+        out.push_str(&format!(
+            r#"<hp:run charPrIDRef="{}"><hp:t/></hp:run>"#,
+            first_run_char_shape_id(p)
+        ));
+    }
+    out
+}
+
+fn byte_index_at_utf16(text: &str, target: u32) -> usize {
+    let mut offset = 0u32;
+    for (byte_index, ch) in text.char_indices() {
+        if offset >= target {
+            return byte_index;
+        }
+        offset += ch.len_utf16() as u32;
+    }
+    text.len()
 }
 
 /// Paragraph 하나를 (`<hp:t>` XML, lineseg XML, 다음 vert_cursor)로 변환.
@@ -471,6 +533,26 @@ mod tests {
         let ctx = SerializeContext::collect_from_document(&doc);
         let xml = String::from_utf8(write_section(&section, &doc, 0, &ctx).unwrap()).unwrap();
         assert!(xml.contains(r#"<hp:run charPrIDRef="9"><hp:t>styled heading</hp:t>"#));
+    }
+
+    #[test]
+    fn hp_runs_preserve_partial_character_format_ranges() {
+        let mut para = Paragraph::default();
+        para.text = "(1) 굵게 저장".to_string();
+        para.char_offsets = (0..para.text.chars().count() as u32).collect();
+        para.char_shapes.push(CharShapeRef {
+            start_pos: 0,
+            char_shape_id: 19,
+        });
+        para.char_shapes.push(CharShapeRef {
+            start_pos: 4,
+            char_shape_id: 28,
+        });
+        let (doc, section) = make_doc_with_paragraph(para);
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &ctx).unwrap()).unwrap();
+        assert!(xml.contains(r#"<hp:run charPrIDRef="19"><hp:t>(1) </hp:t></hp:run>"#));
+        assert!(xml.contains(r#"<hp:run charPrIDRef="28"><hp:t>굵게 저장</hp:t></hp:run>"#));
     }
 
     #[test]

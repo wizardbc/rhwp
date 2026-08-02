@@ -192,6 +192,11 @@ export class RhwpEditor {
     return this._request('getSelection');
   }
 
+  /** 현재 선택영역 시작점의 글자·문단 속성을 반환합니다. */
+  async getSelectionStyleSnapshot() {
+    return this._request('getSelectionStyleSnapshot');
+  }
+
   /** 문서 전체에서 텍스트를 찾아 구조 위치와 길이를 반환합니다. */
   async searchText(query, caseSensitive = false) {
     return this._request('searchText', { query, caseSensitive });
