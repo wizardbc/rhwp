@@ -3,9 +3,10 @@ import { resolve } from 'path';
 import { readFileSync } from 'fs';
 
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
+const studioBase = process.env.RHWP_STUDIO_BASE || '/hwp/studio/';
 
 export default defineConfig({
-  base: '/hwp/studio/',
+  base: studioBase,
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
