@@ -4,6 +4,10 @@ import { readFileSync } from 'fs';
 
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
 const studioBase = process.env.RHWP_STUDIO_BASE || '/hwp/studio/';
+const previewAllowedHosts = (process.env.RHWP_STUDIO_ALLOWED_HOSTS || '')
+  .split(',')
+  .map((host) => host.trim())
+  .filter(Boolean);
 
 export default defineConfig({
   base: studioBase,
@@ -23,5 +27,8 @@ export default defineConfig({
     fs: {
       allow: ['..'],
     },
+  },
+  preview: {
+    ...(previewAllowedHosts.length ? { allowedHosts: previewAllowedHosts } : {}),
   },
 });
