@@ -295,7 +295,9 @@ export class InputHandler {
     this.textarea.addEventListener('paste', this.onPasteBound);
 
     // 줌 변경 시 캐럿/선택 마커 위치 갱신
+    for (const event of ['viewport-resize', 'viewport-scroll'] as const) eventBus.on(event, () => { requestAnimationFrame(() => this.citationRenderer.refresh(this.viewportManager.getZoom())); });
     eventBus.on('zoom-changed', () => {
+      requestAnimationFrame(() => this.citationRenderer.refresh(this.viewportManager.getZoom()));
       if (this.active) {
         const rect = this.cursor.getRect();
         if (rect) {

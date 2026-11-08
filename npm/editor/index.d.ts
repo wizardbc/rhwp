@@ -91,10 +91,12 @@ export interface SearchTextResult {
   para?: number;
   charOffset?: number;
   length?: number;
+  text?: string;
   cellContext?: { parentPara: number; ctrlIdx: number; cellIdx: number; cellPara: number };
 }
 
 export type SelectTarget =
+  | {kind:'cellTextRange';secIdx:number;paraIdx:number;controlIdx:number;cellIdx:number;cellPara:number;charStart:number;charEnd:number}
   | { kind: 'paragraph'; sectionIndex: number; paragraphIndex: number }
   | { kind: 'textRange'; sectionIndex: number; paragraphIndex: number; charStart: number; charEnd: number }
   | { kind: 'table'; secIdx: number; paraIdx: number; controlIdx: number }
@@ -121,6 +123,8 @@ export declare class RhwpEditor {
   getSelectionStyleSnapshot(): Promise<SelectionStyleSnapshot>;
   /** 문서 전체에서 텍스트를 찾아 구조 위치와 길이를 반환합니다. */
   searchText(query: string, caseSensitive?: boolean): Promise<SearchTextResult>;
+  searchAllText(query: string, caseSensitive?: boolean): Promise<SearchTextResult[]>;
+  getDocumentContext(maxChars?: number): Promise<{text:string;revision:number;truncated:boolean}>;
   /** 문서의 특정 구조 위치로 이동하거나 해당 문단을 선택합니다. */
   selectTarget(
     target: SelectTarget,

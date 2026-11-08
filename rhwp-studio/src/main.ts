@@ -45,6 +45,7 @@ let documentRevision = 0;
 // 단조 증가 revision으로 추적한다. 선택 이동·스크롤은 문서 변경이 아니므로 제외된다.
 eventBus.on('document-changed', () => {
   documentRevision += 1;
+  if (window.parent !== window) window.parent.postMessage({type:'rhwp-document-changed',documentRevision}, '*');
 });
 
 function notifyParentDocumentLoaded(fileName: string, docInfo: DocumentInfo): void {
@@ -1632,6 +1633,57 @@ function buildTableCellEndPosition(target: any): any {
   };
 }
 
+function getDocumentContext(maxChars = 80000) {
+  const limit=Math.max(1000,Math.min(Number(maxChars)||80000,100000));
+  const lines:string[]=[];let length=0;let truncated=false;
+  function add(text:string){if(length>=limit){truncated=true;return;}const part=text.slice(0,limit-length);lines.push(part);length+=part.length+1;if(part.length<text.length)truncated=true;}
+  for(let sec=0;sec<(wasm.getDocumentInfo().sectionCount??1);sec++)for(let para=0;para<wasm.getParagraphCount(sec);para++){
+    const n=wasm.getParagraphLength(sec,para);if(n)add(`[본문 ${sec}:${para}] ${wasm.getTextRange(sec,para,0,n)}`);
+  }
+  for(const t of collectTopLevelTableTargets()){
+    const size=wasm.getTableDimensions(t.secIdx,t.paraIdx,t.controlIdx);
+    for(let cell=0;cell<size.cellCount;cell++)for(let cp=0;cp<wasm.getCellParagraphCount(t.secIdx,t.paraIdx,t.controlIdx,cell);cp++){
+      const n=wasm.getCellParagraphLength(t.secIdx,t.paraIdx,t.controlIdx,cell,cp);
+      if(n)add(`[표 ${t.secIdx}:${t.paraIdx}:${t.controlIdx} 셀 ${cell}:${cp}] ${wasm.getTextInCell(t.secIdx,t.paraIdx,t.controlIdx,cell,cp,0,n)}`);
+    }
+  }
+  return {text:lines.join('\n'),revision:documentRevision,truncated};
+}
+
+function searchAllText(query: string, caseSensitive = false): any[] {
+  if (!query || query.length > 4000) return [];
+  const hits: any[] = [];
+  const needle = caseSensitive ? query : query.toLowerCase();
+  function scan(text: string, base: any) {
+    const haystack = caseSensitive ? text : text.toLowerCase();
+    let offset = 0;
+    while (hits.length < 500) {
+      const index = haystack.indexOf(needle, offset);
+      if (index < 0) break;
+      hits.push({ found: true, ...base, charOffset: Array.from(text.slice(0,index)).length,
+                  length: Array.from(query).length, text: text.slice(Math.max(0,index-24),index+query.length+36) });
+      offset = index + Math.max(1,query.length);
+    }
+  }
+  for (let sec = 0; sec < (wasm.getDocumentInfo().sectionCount ?? 1); sec++) {
+    for (let para = 0; para < wasm.getParagraphCount(sec); para++) {
+      const length = wasm.getParagraphLength(sec,para);
+      if (length) scan(wasm.getTextRange(sec,para,0,length),{sec,para});
+    }
+  }
+  for (const t of collectTopLevelTableTargets()) {
+    const dimensions = wasm.getTableDimensions(t.secIdx,t.paraIdx,t.controlIdx);
+    for (let cell = 0; cell < dimensions.cellCount; cell++) {
+      for (let cp = 0; cp < wasm.getCellParagraphCount(t.secIdx,t.paraIdx,t.controlIdx,cell); cp++) {
+        const length = wasm.getCellParagraphLength(t.secIdx,t.paraIdx,t.controlIdx,cell,cp);
+        if (length) scan(wasm.getTextInCell(t.secIdx,t.paraIdx,t.controlIdx,cell,cp,0,length),
+          {sec:t.secIdx,para:t.paraIdx,cellContext:{parentPara:t.paraIdx,ctrlIdx:t.controlIdx,cellIdx:cell,cellPara:cp}});
+      }
+    }
+  }
+  return hits;
+}
+
 function selectTarget(target: any, mode: string = 'cursor'): boolean {
   if (!inputHandler || !target || typeof target !== 'object') {
     return false;
@@ -1661,6 +1713,10 @@ function selectTarget(target: any, mode: string = 'cursor'): boolean {
       });
     case 'table':
       return inputHandler.selectTableObject(target.secIdx, target.paraIdx, target.controlIdx);
+    case 'cellTextRange': {
+      const base={sectionIndex:target.secIdx,paragraphIndex:target.cellPara??0,parentParaIndex:target.paraIdx,controlIndex:target.controlIdx,cellIndex:target.cellIdx};
+      return inputHandler.selectRange({...base,charOffset:target.charStart},{...base,charOffset:target.charEnd});
+    }
     case 'tableCell':
       if (mode === 'cell') {
         return inputHandler.selectTableCell(target.secIdx, target.paraIdx, target.controlIdx, target.cellIdx);
@@ -2436,6 +2492,12 @@ window.addEventListener('message', async (e) => {
         break;
       case 'getFormSnapshot':
         reply(await getFormSnapshot(params.includeImages !== false));
+        break;
+      case 'searchAllText':
+        reply(searchAllText(params.query ?? '',!!params.caseSensitive));
+        break;
+      case 'getDocumentContext':
+        reply(getDocumentContext(params.maxChars));
         break;
       case 'searchText':
         reply(wasm.searchText(params.query ?? '', 0, 0, 0, true, !!params.caseSensitive));

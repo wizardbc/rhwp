@@ -162,6 +162,10 @@ export class RhwpEditor {
     return this._request('createNewDocument', {}, 30000);
   }
 
+  async getDocumentContext(maxChars = 80000) {
+    return this._request('getDocumentContext', {maxChars});
+  }
+
   /**
    * 명시적으로 생성한 문서의 초기 내용 또는 사용자가 확인한 편집 작업을 적용합니다.
    * 선택영역 수정은 replaceSelection을 우선 사용해야 합니다.
@@ -198,6 +202,10 @@ export class RhwpEditor {
   }
 
   /** 문서 전체에서 텍스트를 찾아 구조 위치와 길이를 반환합니다. */
+  async searchAllText(query, caseSensitive = false) {
+    return this._request('searchAllText', { query, caseSensitive });
+  }
+
   async searchText(query, caseSensitive = false) {
     return this._request('searchText', { query, caseSensitive });
   }

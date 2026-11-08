@@ -5,6 +5,7 @@ import { VirtualScroll } from '@/view/virtual-scroll';
 export class SelectionRenderer {
   private layer: HTMLDivElement;
   private highlights: HTMLDivElement[] = [];
+  private lastRects: SelectionRect[] = [];
 
   constructor(
     private container: HTMLElement,
@@ -23,6 +24,7 @@ export class SelectionRenderer {
   /** 선택 사각형을 렌더링한다 */
   render(rects: SelectionRect[], zoom: number): void {
     this.clear();
+    this.lastRects = rects.map(rect => ({...rect}));
     this.ensureAttached();
 
     for (const rect of rects) {
@@ -52,7 +54,10 @@ export class SelectionRenderer {
   }
 
   /** 모든 하이라이트를 제거한다 */
+  refresh(zoom: number): void { if (this.lastRects.length) this.render(this.lastRects, zoom); }
+
   clear(): void {
+    this.lastRects = [];
     for (const div of this.highlights) {
       div.remove();
     }
