@@ -39,8 +39,8 @@ const PARA_CLOSE: &str = "</hp:p></hs:sec>";
 // 템플릿 내 첫 <hp:p> 태그의 실제 문자열 (id="3121190098" 랜덤 해시 포함).
 // 템플릿은 정적이므로 이 문자열이 고정 위치에 있음이 보장됨.
 const TEMPLATE_FIRST_P_TAG: &str = r#"<hp:p id="3121190098" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">"#;
-// 템플릿 내 <hp:run charPrIDRef="0"> 직후에 TEXT_SLOT 이 오는 패턴.
-const TEMPLATE_RUN_BEFORE_TEXT: &str = r#"<hp:run charPrIDRef="0"><hp:t/>"#;
+// Replace the complete template text run: rendered runs already include their closing tag.
+const TEMPLATE_RUN_BEFORE_TEXT: &str = r#"<hp:run charPrIDRef="0"><hp:t/></hp:run>"#;
 
 /// 레퍼런스 기준 줄 레이아웃 파라미터.
 const VERT_STEP: u32 = 1600; // vertsize(1000) + spacing(600)
@@ -593,6 +593,36 @@ mod tests {
         assert!(xml.contains(r#"hideFirstFooter="1""#));
         assert!(xml.contains(r#"<hp:footer id="" applyPageType="BOTH">"#));
         assert!(xml.contains(r#"<hp:autoNum num="1" numType="PAGE">"#));
+        let mut reader = quick_xml::Reader::from_str(&xml);
+        loop {
+            match reader.read_event().expect("exported section must be well-formed XML") {
+                quick_xml::events::Event::Eof => break,
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn empty_and_text_first_paragraphs_export_balanced_xml() {
+        for text in [None, Some("첫 문단 & <본문>")] {
+            let mut section = Section::default();
+            if let Some(text) = text {
+                let mut paragraph = Paragraph::default();
+                paragraph.text = text.into();
+                section.paragraphs.push(paragraph);
+            }
+            let mut doc = Document::default();
+            doc.sections.push(section.clone());
+            let ctx = SerializeContext::collect_from_document(&doc);
+            let bytes = write_section(&section, &doc, 0, &ctx).unwrap();
+            let mut reader = quick_xml::Reader::from_reader(bytes.as_slice());
+            loop {
+                match reader.read_event().expect("exported section must be well-formed XML") {
+                    quick_xml::events::Event::Eof => break,
+                    _ => {}
+                }
+            }
+        }
     }
 
     #[test]

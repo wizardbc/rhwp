@@ -141,7 +141,15 @@ impl Paginator {
             let para_style_break = para_style.map(|s| s.page_break_before).unwrap_or(false);
 
 
-            if (force_page_break || para_style_break) && !st.current_items.is_empty() {
+            // A full-paper floating chapter cover does not consume its visual
+            // height in text flow. HWP stores the following soft page boundary
+            // as a line-position reset, without the explicit paragraph break bit.
+            // Preserve that boundary instead of drawing the next body over it.
+            let cover_boundary = para_idx.checked_sub(1)
+                .and_then(|idx| paragraphs.get(idx))
+                .map(|previous| Self::full_page_cover_boundary(previous, para, page_def))
+                .unwrap_or(false);
+            if (force_page_break || para_style_break || cover_boundary) && !st.current_items.is_empty() {
                 self.process_page_break(&mut st);
             }
 
@@ -1746,6 +1754,26 @@ impl Paginator {
             prev_page_last_para = page_last_para;
             page_num_counter += 1;
         }
+    }
+
+    pub(super) fn full_page_cover_boundary(previous: &Paragraph, next: &Paragraph, page: &PageDef) -> bool {
+        use crate::model::shape::{VertRelTo, TextWrap};
+        let reset = previous.line_segs.last().zip(next.line_segs.first())
+            .map(|(before, after)| i64::from(before.vertical_pos) > i64::from(page.height) / 2
+                && i64::from(after.vertical_pos) < i64::from(page.height) / 10)
+            .unwrap_or(false);
+        reset && previous.controls.iter().any(|control| {
+            let common = match control {
+                Control::Shape(shape) => shape.common(),
+                Control::Picture(picture) => &picture.common,
+                _ => return false,
+            };
+            !common.treat_as_char
+                && common.vert_rel_to == VertRelTo::Paper
+                && matches!(common.text_wrap, TextWrap::BehindText | TextWrap::InFrontOfText)
+                && common.width >= page.width * 4 / 5
+                && common.height >= page.height * 4 / 5
+        })
     }
 
     /// 문단이 해당 페이지에서 **처음 시작**하는지 확인

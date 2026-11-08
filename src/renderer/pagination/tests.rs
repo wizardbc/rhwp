@@ -855,3 +855,23 @@ fn test_table_height_within_body_area() {
         }
     }
 }
+
+#[test]
+fn full_paper_cover_preserves_soft_page_boundary_without_affecting_inline_images() {
+    use crate::model::shape::{CommonObjAttr, RectangleShape, ShapeObject, TextWrap, VertRelTo};
+    use crate::model::control::Control;
+    let page = a4_page_def();
+    let mut cover = make_paragraph_with_height(1200);
+    cover.line_segs[0].vertical_pos = 61000;
+    cover.controls.push(Control::Shape(Box::new(ShapeObject::Rectangle(RectangleShape {
+        common: CommonObjAttr { width: page.width, height: page.height,
+            vert_rel_to: VertRelTo::Paper, text_wrap: TextWrap::BehindText,
+            ..Default::default() }, ..Default::default()
+    }))));
+    let body = make_paragraph_with_height(8197);
+    assert!(Paginator::full_page_cover_boundary(&cover, &body, &page));
+    if let Control::Shape(ref mut object) = cover.controls[0] { if let ShapeObject::Rectangle(ref mut shape) = **object { shape.common.treat_as_char = true; } }
+    assert!(!Paginator::full_page_cover_boundary(&cover, &body, &page));
+    if let Control::Shape(ref mut object) = cover.controls[0] { if let ShapeObject::Rectangle(ref mut shape) = **object { shape.common.treat_as_char = false; shape.common.height = 20000; } }
+    assert!(!Paginator::full_page_cover_boundary(&cover, &body, &page));
+}
